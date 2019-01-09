@@ -16,30 +16,50 @@ import pdb
 
 #device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-def discount_rewards(list_of_rewards, discount):
-	# r_tensor = torch.FloatTensor(list_of_rewards)
+def discount_rewards(list_of_rewards, discount, center=True):
+	# r_tensor = torch.DoubleTensor(list_of_rewards)
 	# all_discounts = [discount**i for i in range(r_tensor.shape[0])]
 	# all_discounts.reverse()
-	# G_list = r_tensor * torch.FloatTensor(all_discounts)
+	# G_list = r_tensor * torch.DoubleTensor(all_discounts)
 	#return G_list - G_list.mean()
-	if isinstance(list_of_rewards, list):
+	if isinstance(list_of_rewards, list) or isinstance(list_of_rewards, np.ndarray):
 		r = np.array([discount**i * list_of_rewards[i] 
 			for i in range(len(list_of_rewards))])
 		# Reverse the array direction for cumsum and then
 		# revert back to the original order
 		r = r[::-1].cumsum()[::-1]
-		return torch.FloatTensor((r - r.mean())/(r.std()+ 1e-5))
+		if center:
+			return torch.DoubleTensor((r - r.mean())/(r.std()+ 1e-5))
+		else:
+			return torch.DoubleTensor(r.copy())
 
 	elif isinstance(list_of_rewards, torch.Tensor):
-		list_of_rewards = list_of_rewards.squeeze()
-		discounted_batch = torch.zeros((list_of_rewards.shape[0],list_of_rewards.shape[1]))
+		#list_of_rewards = list_of_rewards.squeeze()
+		#discounted_batch = torch.zeros((list_of_rewards.shape[0],list_of_rewards.shape[1]))
 
-		for batch in range(list_of_rewards.shape[0]):
+		#for batch in range(list_of_rewards.shape[0]):
 			#r = torch.tensor([discount**i * list_of_rewards[batch, i] for i in range(list_of_rewards.shape[1])]) 
 			#print([torch.sum(r[i:]) for i in range(r.shape[0])])
-			discounted_batch[batch] = torch.tensor([torch.sum(discount**i * list_of_rewards[batch,i:]) for i in range(list_of_rewards.shape[1])]).requires_grad_()
+
+		#not batchwise!!! only meant to be used with a single episode
+
+		r = torch.zeros_like(list_of_rewards)
+		for i in range(list_of_rewards.shape[1]):
+			r[:, i] = discount**i * list_of_rewards[:, i]
+
+		#r = torch.tensor([discount**i * list_of_rewards[:,i] for i in range(list_of_rewards.shape[1])])#.requires_grad_()
+		discounted = torch.zeros_like(list_of_rewards)
 		
-		return discounted_batch
+		for i in range(r.shape[1]):
+			discounted[:,i] = torch.sum(r[:, i:], dim=1)
+
+		# discounted_batch[batch] = torch.tensor([torch.sum(discount**i * list_of_rewards[batch,i:]) for i in range(list_of_rewards.shape[1])]).requires_grad_()
+		
+		#seems like pytorch std is more correct? Bessel correction?
+		if center:
+			return (discounted - torch.mean(discounted))/(torch.std(discounted) + 1e-5)#_batch
+		else:
+			return discounted
 
 
 
@@ -56,8 +76,10 @@ def convert_one_hot(a, dim):
 	return retval
 
 
+
 def roll_1(x, n):  
     return torch.cat((x[:, -n:], x[:, :-n]), dim=1)
+
 
 
 def shift_down(x, step, full_size):
@@ -73,9 +95,11 @@ def shift_down(x, step, full_size):
 		raise NotImplementedError('shape {shape_x} of input not corrent or implemented'.format(shape_x=x.shape))
 
 
+
 def roll_left(x, n):  
     #return torch.cat((x[-n:], x[:-n]))
     return torch.cat((x[n:], x[:n]))
+
 
 
 def get_selected_log_probabilities(policy_estimator, states_tensor, actions_tensor, batch_actions):
@@ -91,6 +115,7 @@ def get_selected_log_probabilities(policy_estimator, states_tensor, actions_tens
 	return selected_log_probs
 
 
+
 def mle_validation_loss(P_hat, policy, val_states_next_tensor, state_actions_val, n_actions, max_actions, continuous_actionspace=False, device='cpu'):
 
 	squared_errors_val = torch.zeros_like(val_states_next_tensor)
@@ -102,11 +127,11 @@ def mle_validation_loss(P_hat, policy, val_states_next_tensor, state_actions_val
 			squared_errors_val += shift_down((val_states_next_tensor[:,step:,:] - next_step_state_val)**2, step, max_actions)
 
 			shortened_val = next_step_state_val[:,:-1,:]
-			action_probs_val = policy(torch.FloatTensor(shortened_val))
+			action_probs_val = policy(torch.DoubleTensor(shortened_val))
 			
 			if not continuous_actionspace:
 				c_val = Categorical(action_probs_val[0])
-				a_val = c_val.sample().type(torch.FloatTensor).to(device)
+				a_val = c_val.sample().type(torch.DoubleTensor).to(device)
 				step_state_val = torch.cat((shortened_val, convert_one_hot(a_val, n_actions).unsqueeze(2)),dim=2)
 			else:
 				c_val = Normal(*action_probs_val)
@@ -139,7 +164,7 @@ def paml_validation_loss(env, P_hat, policy, val_states_prev_tensor, val_states_
 	state_actions_val = torch.cat((val_states_prev_tensor, actions_tensor_val),dim=2)
 
 	policy.zero_grad()
-	multiplier = torch.arange(max_actions,0,-1).repeat(val_size,1).unsqueeze(2).type(torch.FloatTensor).to(device)
+	multiplier = torch.arange(max_actions,0,-1).repeat(val_size,1).unsqueeze(2).type(torch.DoubleTensor).to(device)
 	true_log_probs_t = torch.sum(
 						get_selected_log_probabilities(
 							policy, 
@@ -164,7 +189,7 @@ def paml_validation_loss(env, P_hat, policy, val_states_prev_tensor, val_states_
 		shortened = next_step_state[:,:-1,:]
 
 		with torch.no_grad():
-			action_probs = policy(torch.FloatTensor(shortened))
+			action_probs = policy(torch.DoubleTensor(shortened))
 			
 			if not continuous_actionspace:
 				c = Categorical(action_probs)
@@ -219,9 +244,9 @@ def collect_data(env, policy, episodes, n_actions, n_states, R_range, max_action
 		while len(actions_list) < max_actions:
 			with torch.no_grad():
 				if device == 'cuda':
-					action_probs = policy(torch.cuda.FloatTensor(s))
+					action_probs = policy(torch.cuda.DoubleTensor(s))
 				else:
-					action_probs = policy(torch.FloatTensor(s))
+					action_probs = policy(torch.DoubleTensor(s))
 
 				if not continuous_actionspace:
 					c = Categorical(action_probs[0])
@@ -246,10 +271,10 @@ def collect_data(env, policy, episodes, n_actions, n_states, R_range, max_action
 		all_actions_list.extend(actions_list)
 		all_rewards_list.extend(rewards_list)
 
-	states_prev_tensor = torch.FloatTensor(states_prev_list).to(device).view(episodes, -1, n_states)
-	states_next_tensor = torch.FloatTensor(states_next_list).to(device).view(episodes, -1, n_states)
-	actions_tensor = torch.stack(all_actions_list).type(torch.FloatTensor).to(device).view(episodes, -1, n_actions)
-	rewards_tensor = torch.FloatTensor(all_rewards_list).to(device).view(episodes, -1, n_actions)
+	states_prev_tensor = torch.DoubleTensor(states_prev_list).to(device).view(episodes, -1, n_states)
+	states_next_tensor = torch.DoubleTensor(states_next_list).to(device).view(episodes, -1, n_states)
+	actions_tensor = torch.stack(all_actions_list).type(torch.DoubleTensor).to(device).view(episodes, -1, n_actions)
+	rewards_tensor = torch.DoubleTensor(all_rewards_list).to(device).view(episodes, -1, n_actions)
 
 	return states_prev_tensor, states_next_tensor, actions_tensor, rewards_tensor
 
@@ -295,7 +320,7 @@ def reinforce_categorical(env, policy_estimator, episodes, use_model=False, devi
 		#for a in actions_to_use:
 			with torch.no_grad():
 				if not use_model:
-					a_probs = policy_estimator(torch.FloatTensor(s))[0].detach().numpy()
+					a_probs = policy_estimator(torch.DoubleTensor(s))[0].detach().numpy()
 					a = np.random.choice(range(n_actions), p=a_probs)
 					s_prime, r, done, _ = env.step(a)
 
@@ -303,7 +328,7 @@ def reinforce_categorical(env, policy_estimator, episodes, use_model=False, devi
 					a_probs = policy_estimator(s).detach()
 					c = Categorical(a_probs)
 					a = c.sample() 
-					s_prime, _, _ = env(torch.cat((s,a.unsqueeze(0).type(torch.cuda.FloatTensor)),dim=0))
+					s_prime, _, _ = env(torch.cat((s,a.unsqueeze(0).type(torch.cuda.DoubleTensor)),dim=0))
 					
 					x = s_prime[0]
 					theta = s_prime[2]
@@ -329,11 +354,11 @@ def reinforce_categorical(env, policy_estimator, episodes, use_model=False, devi
 		else:
 			#update pe
 			if not use_model:
-				return_G = torch.FloatTensor(batch_rewards)
-				states_tensor = torch.FloatTensor(batch_states)
+				return_G = torch.DoubleTensor(batch_rewards)
+				states_tensor = torch.DoubleTensor(batch_states)
 				actions_tensor = torch.LongTensor(batch_actions)
 			else:
-				return_G = torch.FloatTensor(batch_rewards).to(device)
+				return_G = torch.DoubleTensor(batch_rewards).to(device)
 				states_tensor = torch.stack(batch_states).to(device)
 				actions_tensor = torch.stack(batch_actions).type(torch.LongTensor).to(device)
 

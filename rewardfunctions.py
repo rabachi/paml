@@ -18,6 +18,7 @@ def get_reward_fn(env, states_tensor, actions_tensor):
 		thsin = states_tensor[:,:,1]
 		thdot = states_tensor[:,:,2]
 
+		#pdb.set_trace()
 		#tanth = thsin/thcos
 		#tanth[torch.isnan(tanth)] = 0
 		th = torch.atan2(thsin, thcos)

@@ -10,6 +10,8 @@ from torch import optim
 from torch.distributions import Categorical, Normal, MultivariateNormal
 import pdb
 
+from utils import *
+
 
 class Policy(nn.Module):
 	def __init__(self, in_dim, out_dim, continuous=False, std=1.0):
@@ -23,8 +25,8 @@ class Policy(nn.Module):
 		torch.nn.init.xavier_uniform_(self.theta.weight)
 
 		if continuous:
-			#self.sigma = nn.Linear(16, out_dim)
-			self.log_std = nn.Parameter(torch.ones(out_dim) * std)
+			#self.log_std = nn.Linear(16, out_dim)
+			self.log_std = nn.Parameter(torch.ones(out_dim) * std, requires_grad=False)
 
 
 	def forward(self, x):
@@ -45,17 +47,6 @@ class Policy(nn.Module):
 
 	def get_phi(self, x):
 		return self.relu(self.lin1(x))
-
-
-class StateActionFeatures(nn.Module):
-	def __init__(self, N_STATES, N_ACTIONS, hidden_dim):
-		super(Featured_Policy, self).__init__()
-		self.fc1 = nn.Linear(N_STATES + N_ACTIONS, 128)
-		self.fc2 = nn.Linear(128, hidden_dim)
-		self.relu = nn.ReLU()
-
-	def forward(self, x):
-		return self.fc2(self.relu(self.fc1(x)))
 
 
 
@@ -106,7 +97,7 @@ class PCPModel(torch.nn.Module):
 	def __init__(
 		self, 
 		state_dim, 
-		action_dim, 
+		env, 
 		R, 
 		n_neurons=1000,
 		n_layers=9, 
@@ -158,6 +149,7 @@ class PCPModel(torch.nn.Module):
 
 		return out
 
+
 	# def render(self, mode='human'):
 	# 	from gym.envs.classic_control import rendering
 
@@ -199,6 +191,7 @@ class ACPModel(torch.nn.Module):
 		self, 
 		state_dim, 
 		action_dim, 
+		R_range,
 		n_neurons=128,
 		n_layers=3,
 		activation_fn=nn.ReLU(),
@@ -208,6 +201,9 @@ class ACPModel(torch.nn.Module):
 		super(ACPModel, self).__init__()
 		self.state_dim = state_dim
 		self.action_dim = action_dim
+		self.max_torque = 8.0
+		self.range = R_range
+
 		if action_dim == 2:
 			self.input_layer = nn.Linear(state_dim + 1, n_neurons)
 		else:
@@ -247,7 +243,7 @@ class ACPModel(torch.nn.Module):
 			output = torch.zeros_like(out)
 			#if len(x.shape) == 3:
 			output[:,:,0:1] = torch.clamp(out[:,:,0:1], min=-1.0, max=1.0)
-			output[:,:,2] = torch.clamp(out[:,:,2], min=-8.0, max=8.0)
+			output[:,:,2] = torch.clamp(out[:,:,2], min=-self.max_torque, max=self.max_torque)
 		
 			return output
 
@@ -260,12 +256,16 @@ class ACPModel(torch.nn.Module):
 
 
 
+
+
 class DirectEnvModel(torch.nn.Module):
-	def __init__(self, N_STATES, N_ACTIONS):
+	def __init__(self, N_STATES, N_ACTIONS, MAX_TORQUE):
 		super(DirectEnvModel, self).__init__()
 		# build network layers
 		self.n_states = N_STATES
 		self.n_actions = N_ACTIONS
+		self.max_torque = MAX_TORQUE
+
 		self.fc1 = nn.Linear(N_STATES + N_ACTIONS, 256)
 		self.fc2 = nn.Linear(256, 128)
 		self.fc3 = nn.Linear(128, 128)
@@ -325,3 +325,241 @@ class DirectEnvModel(torch.nn.Module):
 		# 	reward_value = torch.ones_like(done_value)
 
 		return mu#, reward_value, 0
+
+
+	def train_paml(self, env, pe, states_prev, states_next, actions_tensor, rewards_tensor, epochs, max_actions, R_range, discount, opt, continuous_actionspace, losses, device='cpu'):
+
+		best_loss = 20
+		batch_size = states_next.shape[0]
+
+		state_actions = torch.cat((states_prev,actions_tensor), dim=2)
+
+		#pamlize the real trajectory (states_next)
+		pe.zero_grad()
+		multiplier = torch.arange(max_actions,0,-1).repeat(batch_size,1).unsqueeze(2).type(torch.FloatTensor).to(device)
+
+		true_log_probs_t = torch.sum(
+							get_selected_log_probabilities(
+								pe, 
+								states_prev, 
+								actions_tensor, 
+								range(actions_tensor.shape[0])
+								) * rewards_tensor #* multiplier
+							, dim=1)
+
+		true_log_probs = torch.mean(true_log_probs_t, dim=0)
+		true_pe_grads = grad(true_log_probs, pe.parameters(), create_graph=True)
+
+
+		for i in range(epochs):
+			opt.zero_grad()
+			step_state_action = state_actions.to(device)
+			k_step_log_probs = torch.zeros((R_range, batch_size, self.n_actions))
+			pe.zero_grad()
+
+			for step in range(R_range - 1):
+				next_step_state = self.forward(step_state_action)
+				#print('states_mean:', torch.mean(next_step_state))
+				shortened = next_step_state[:,:-1,:]
+
+				with torch.no_grad():
+					print(step)
+					action_probs = pe(torch.FloatTensor(shortened))
+					
+					if not continuous_actionspace:
+						c = Categorical(action_probs)
+						actions_t_l = c.sample() 
+						step_state_action = torch.cat((shortened,convert_one_hot(actions_t_l, self.n_actions)),dim=2)
+					else:
+						c = Normal(*action_probs)
+						actions_t_l = torch.clamp(c.rsample(), min=-2.,max=2.)
+						step_state_action = torch.cat((shortened, actions_t_l),dim=2)
+
+
+				model_rewards_t = get_reward_fn(env, shortened, actions_t_l) #need gradients of this because rewards are from the states
+				discounted_model_rewards = discount_rewards(model_rewards_t, discount)
+				model_log_probs = torch.sum(
+									get_selected_log_probabilities(
+										pe, 
+										shortened,
+										actions_t_l, range(actions_t_l.shape[0])) * 
+										model_rewards_t
+									, dim=1)
+				k_step_log_probs[step] = model_log_probs#.squeeze()
+
+			model_log_probs = torch.mean(torch.sum(k_step_log_probs, dim=0))
+
+			model_pe_grads = grad(model_log_probs, pe.parameters(), create_graph=True)
+			#total_log_probs.backward(retain_graph=True)
+			#model_pe_grads = [x.grad for x in pe.parameters()]
+
+			grad_diffs = torch.zeros((len(true_pe_grads)))
+	
+			for i in range(len(true_pe_grads)):
+				grad_diffs[i] = torch.sqrt(torch.sum((model_pe_grads[i] - true_pe_grads[i])**2))
+
+			model_loss = torch.mean(grad_diffs)
+			model_loss.backward(retain_graph=True)
+
+			# print('model_pe_grads[0]:', model_pe_grads[0])
+			# print('true_pe_grads[0]:',true_pe_grads[0])
+
+			# print('model_log_probs:', torch.mean(model_log_probs))
+			# print('model_rewards_t:', torch.mean(model_rewards_t))
+			# print('actions_t_l:', torch.mean(actions_t_l))
+
+			# pdb.set_trace()
+
+			print("i: {}, paml loss = {:.7f}".format(i, model_loss.data.cpu()))
+			if model_loss < best_loss:
+				torch.save(self.state_dict(), 
+					env.spec.id+'_paml_trained_model.pth')
+				#torch.save(P_hat, 'mle_trained_model.pth')
+				best_loss = model_loss 
+
+			opt.step()
+			losses.append(model_loss.data.cpu())
+
+		return best_loss
+
+
+	def train_paml_skip(self, env, pe, states_prev, states_next, actions_tensor, rewards_tensor, epochs, max_actions, R_range, discount, opt, continuous_actionspace, losses, device='cpu'):
+
+		best_loss = 20
+		batch_size = states_next.shape[0]
+		R_range = 1
+
+		state_actions = torch.cat((states_prev,actions_tensor), dim=2)
+
+		#pamlize the real trajectory (states_next)
+		pe.zero_grad()
+		multiplier = torch.arange(max_actions,0,-1).repeat(batch_size,1).unsqueeze(2).type(torch.FloatTensor).to(device)
+
+		true_log_probs_t = torch.sum(
+							get_selected_log_probabilities(
+								pe, 
+								states_prev, 
+								actions_tensor, 
+								range(actions_tensor.shape[0])
+								) * rewards_tensor #* multiplier
+							, dim=1)
+
+		true_log_probs = torch.mean(true_log_probs_t, dim=0)
+		true_pe_grads = grad(true_log_probs, pe.parameters(), create_graph=True)
+
+
+		for i in range(epochs):
+			opt.zero_grad()
+			step_state_action = state_actions.to(device)
+			k_step_log_probs = torch.zeros((R_range, batch_size, self.n_actions))
+			pe.zero_grad()
+
+			for step in range(R_range):
+				next_step_state = self.forward(step_state_action)
+				#print('states_mean:', torch.mean(next_step_state))
+				shortened = next_step_state[:,:-1,:]
+
+				with torch.no_grad():
+					action_probs = pe(torch.FloatTensor(shortened))
+					
+					if not continuous_actionspace:
+						c = Categorical(action_probs)
+						actions_t_l = c.sample() 
+						step_state_action = torch.cat((shortened,convert_one_hot(actions_t_l, self.n_action)),dim=2)
+					else:
+						c = Normal(*action_probs)
+						actions_t_l = torch.clamp(c.rsample(), min=-2.,max=2.)
+						step_state_action = torch.cat((shortened, actions_t_l),dim=2)
+
+
+				model_rewards_t = get_reward_fn(env, shortened, actions_t_l) #need gradients of this because rewards are from the states
+				discounted_model_rewards = discount_rewards(model_rewards_t[:,:R_range], discount)
+
+				model_log_probs = get_selected_log_probabilities(
+										pe, 
+										shortened,
+										actions_t_l, 
+										range(actions_t_l.shape[0])
+										)
+
+				k_step_log_probs[step] = model_log_probs  
+											#* (discounted_model_rewards_t + 
+
+
+			model_log_probs = torch.mean(torch.sum(k_step_log_probs, dim=0))
+
+			model_pe_grads = grad(model_log_probs, pe.parameters(), create_graph=True)
+			#total_log_probs.backward(retain_graph=True)
+			#model_pe_grads = [x.grad for x in pe.parameters()]
+
+			grad_diffs = torch.zeros((len(true_pe_grads)))
+	
+			for i in range(len(true_pe_grads)):
+				grad_diffs[i] = torch.sqrt(torch.sum((model_pe_grads[i] - true_pe_grads[i])**2))
+
+			model_loss = torch.mean(grad_diffs)
+			model_loss.backward(retain_graph=True)
+
+			# print('model_pe_grads[0]:', model_pe_grads[0])
+			# print('true_pe_grads[0]:',true_pe_grads[0])
+
+			# print('model_log_probs:', torch.mean(model_log_probs))
+			# print('model_rewards_t:', torch.mean(model_rewards_t))
+			# print('actions_t_l:', torch.mean(actions_t_l))
+
+			# pdb.set_trace()
+
+			print("i: {}, paml loss = {:.7f}".format(i, model_loss.data.cpu()))
+			if model_loss < best_loss:
+				torch.save(P_hat.state_dict(), 
+					env.spec.id+'_paml_trained_model.pth')
+				#torch.save(P_hat, 'mle_trained_model.pth')
+				best_loss = model_loss 
+
+			opt.step()
+			losses.append(model_loss.data.cpu())
+
+		return best_loss
+
+
+	def train_mle(self, state_actions, states_next, epochs, max_actions, R_range, opt, env_name, continuous_actionspace, losses):
+		best_loss = 20
+		for i in range(epochs):
+			opt.zero_grad()
+
+			squared_errors = torch.zeros_like(states_next)
+			step_state = state_actions.to(device)
+
+			for step in range(R_range - 1):
+				next_step_state = self.forward(step_state)
+
+				squared_errors += shift_down((states_next[:,step:,:] - next_step_state)**2, step, max_actions)
+
+				#rolled_out_states_sums += shift_down(next_step_state,step, max_actions)
+
+				shortened = next_step_state[:,:-1,:]
+				action_probs = pe(torch.FloatTensor(shortened))
+				
+				if not continuous_actionspace:
+					c = Categorical(action_probs)
+					a = c.sample() 
+					step_state = torch.cat((shortened,convert_one_hot(a, self.n_actions)),dim=2)
+				else:
+					c = Normal(*action_probs)
+					a = torch.clamp(c.rsample(), min=-self.max_torque, max=self.max_torque)
+					step_state = torch.cat((shortened,a),dim=2)
+
+			state_loss = torch.mean(squared_errors, dim=1)#torch.mean((states_next - rolled_out_states_sums)**2)
+
+			model_loss = torch.mean(state_loss) #+ reward_loss)# + done_loss)
+			print("i: {}, negloglik  = {:.7f}".format(i, model_loss.data.cpu()))
+
+			if model_loss < best_loss:
+				torch.save(P_hat.state_dict(), env_name+'_mle_trained_model.pth')
+				#torch.save(P_hat, 'mle_trained_model.pth')
+				best_loss = model_loss  
+
+				model_loss.backward()
+				opt.step()
+				losses.append(model_loss.data.cpu())
+		return best_loss

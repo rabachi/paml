@@ -1,3 +1,7 @@
+from dm_control import suite
+import gym
+import dm_control2gym
+
 import numpy as np
 import matplotlib.pyplot as plt
 import gym
@@ -21,7 +25,7 @@ path = '/home/romina/CS294hw/for_viz/'
 device = 'cpu'
 loss_name = 'mle'
 
-MAX_TORQUE = 2.
+MAX_TORQUE = 1.
 
 if __name__ == "__main__":
 	#initialize pe 
@@ -29,16 +33,20 @@ if __name__ == "__main__":
 	max_actions = 200
 	num_iters = 3000
 	discount = 0.9
-	env = gym.make('Pendulum-v0')
+	#env = gym.make('Pendulum-v0')
+	dm_control2gym.create_render_mode('rs', show=False, return_pixel=True, height=240, width=320, camera_id=-1, overlays=(), depth=False, scene_option=None)
 
-	n_states = env.observation_space.shape[0]
-	continuous_actionspace = isinstance(env.action_space, gym.spaces.box.Box)
+	env = dm_control2gym.make(domain_name="cartpole", task_name="balance")	
+
+
+	n_states = 5#env.observation_space.shape[0]
+	continuous_actionspace = True#isinstance(env.action_space, gym.spaces.box.Box)
 	if continuous_actionspace:
-		n_actions = env.action_space.shape[0]
+		n_actions = 1#env.action_space.shape[0]
 	else:
-		n_actions = env.action_space.n
+		pass#n_actions = env.action_space.n
 
-	R_range = 20
+	R_range = 2
 
  
 	env.seed(0)
@@ -46,11 +54,14 @@ if __name__ == "__main__":
 	errors_name = env.spec.id + '_single_episode_errors_' + loss_name + '_' + str(R_range)
 
 	#P_hat = ACPModel(n_states, n_actions, clip_output=False)
-	P_hat = DirectEnvModel(n_states,n_actions)
-	pe = Policy(n_states, n_actions, continuous=continuous_actionspace)
+	P_hat = DirectEnvModel(n_states,n_actions, MAX_TORQUE)
+	pe = Policy(n_states, n_actions, continuous=continuous_actionspace, std=-0.5)
 
 	P_hat.to(device)
 	pe.to(device)
+
+	P_hat.double()
+	pe.double()
 
 	if loss_name == 'paml':
 		for p in pe.parameters():
@@ -77,16 +88,16 @@ if __name__ == "__main__":
 	while len(actions) < max_actions:
 		with torch.no_grad():
 			if device == 'cuda':
-				action_probs = pe(torch.cuda.FloatTensor(s))
+				action_probs = pe(torch.cuda.DoubleTensor(s))
 			else:
-				action_probs = pe(torch.FloatTensor(s))
+				action_probs = pe(torch.DoubleTensor(s))
 
 			if not continuous_actionspace:
 				c = Categorical(action_probs[0])
 				a = c.sample() 
 			else:
 				c = Normal(*action_probs)
-				a = np.clip(c.rsample(), -MAX_TORQUE, MAX_TORQUE)
+				a = torch.clamp(c.rsample(), min=-MAX_TORQUE, max=MAX_TORQUE)
 
 			s_prime, r, _, _ = env.step(a.cpu().numpy())#-1
 			states.append(s_prime)
@@ -102,11 +113,11 @@ if __name__ == "__main__":
 	#2. train model
 	epoch += 1
 
-	rewards_tensor = torch.FloatTensor(discount_rewards(rewards,discount)).to(device).view(1, -1, 1)
-	states_prev = torch.FloatTensor(states[:-1]).to(device).view(1, -1, n_states)
-	states_next = torch.FloatTensor(states[1:]).to(device).view(1, -1,n_states)
+	rewards_tensor = torch.DoubleTensor(discount_rewards(rewards,discount)).to(device).view(1, -1, 1)
+	states_prev = torch.DoubleTensor(states[:-1]).to(device).view(1, -1, n_states)
+	states_next = torch.DoubleTensor(states[1:]).to(device).view(1, -1,n_states)
 	
-	actions_tensor = torch.stack(actions).type(torch.FloatTensor).to(device).view(1, -1, n_actions)
+	actions_tensor = torch.stack(actions).type(torch.DoubleTensor).to(device).view(1, -1, n_actions)
 
 	state_actions = torch.cat((states_prev,actions_tensor), dim=2)
 
@@ -131,7 +142,7 @@ if __name__ == "__main__":
 
 			###########
 			# shortened = next_step_state[:,:-1,:]
-			# action_probs = pe(torch.FloatTensor(shortened))
+			# action_probs = pe(torch.DoubleTensor(shortened))
 			
 			# if not continuous_actionspace:
 			# 	c = Categorical(action_probs)

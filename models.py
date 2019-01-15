@@ -14,19 +14,21 @@ from utils import *
 
 
 class Policy(nn.Module):
-	def __init__(self, in_dim, out_dim, continuous=False, std=1.0):
+	def __init__(self, in_dim, out_dim, continuous=False, std=-0.8):#-0.8 GOOD
 		super(Policy, self).__init__()
+		self.n_actions = out_dim
 		self.continuous = continuous
-		self.lin1 = nn.Linear(in_dim, 16)
+		self.lin1 = nn.Linear(in_dim, 4)
 		self.relu = nn.ReLU()
-		self.theta = nn.Linear(16, out_dim)
+		self.theta = nn.Linear(4, out_dim)
 
 		torch.nn.init.xavier_uniform_(self.lin1.weight)
 		torch.nn.init.xavier_uniform_(self.theta.weight)
 
 		if continuous:
 			#self.log_std = nn.Linear(16, out_dim)
-			self.log_std = nn.Parameter(torch.ones(out_dim) * std, requires_grad=False)
+			#self.log_std = nn.Parameter(torch.ones(out_dim) * std, requires_grad=False)
+			self.log_std = (torch.ones(out_dim) * std).type(torch.DoubleTensor)
 
 
 	def forward(self, x):
@@ -39,8 +41,8 @@ class Policy(nn.Module):
 			return out, 0
 
 		else:
-			mu = nn.Tanh()(self.theta(phi))
-			#sigma2 = torch.exp(self.sigma(phi))
+			mu = 0.5*nn.Tanh()(self.theta(phi))
+			#sigma = torch.exp(self.log_std(phi))
 			sigma = self.log_std.exp().expand_as(mu)
 
 			return mu, sigma
@@ -266,15 +268,15 @@ class DirectEnvModel(torch.nn.Module):
 		self.n_actions = N_ACTIONS
 		self.max_torque = MAX_TORQUE
 
-		self.fc1 = nn.Linear(N_STATES + N_ACTIONS, 256)
-		self.fc2 = nn.Linear(256, 128)
-		self.fc3 = nn.Linear(128, 128)
+		self.fc1 = nn.Linear(N_STATES + N_ACTIONS, 32)
+		self.fc2 = nn.Linear(32, 16)
+		#self.fc3 = nn.Linear(32, 16)
 
-		self._enc_mu = torch.nn.Linear(128, N_STATES)
+		self._enc_mu = torch.nn.Linear(16, N_STATES)
 		#self._enc_log_sigma = torch.nn.Linear(128, 4)
 
 		#self.statePrime = nn.Linear(16, 4)
-		self.reward = nn.Linear(N_STATES, 1)
+		#self.reward = nn.Linear(N_STATES, 1)
 		#self.done = nn.Linear(N_STATES, 1)
 
 		# initialize layers
@@ -285,7 +287,7 @@ class DirectEnvModel(torch.nn.Module):
 		#torch.nn.init.xavier_uniform_(self._enc_log_sigma.weight)
 
 		#torch.nn.init.xavier_uniform_(self.statePrime.weight)
-		torch.nn.init.xavier_uniform_(self.reward.weight)
+		#torch.nn.init.xavier_uniform_(self.reward.weight)
 		#torch.nn.init.xavier_uniform_(self.done.weight)
 
 	def reset(self):
@@ -304,8 +306,8 @@ class DirectEnvModel(torch.nn.Module):
 
 		mu = self._enc_mu(x)
 
-		statePrime_value = mu
-		reward_value = self.reward(mu)
+		#statePrime_value = mu
+		#reward_value = self.reward(mu)
 		#done_value = nn.Sigmoid()(self.done(mu))
 
 

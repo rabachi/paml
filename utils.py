@@ -13,6 +13,8 @@ from rewardfunctions import *
 
 import pdb
 
+from scipy import linalg
+
 
 #device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -44,14 +46,18 @@ def discount_rewards(list_of_rewards, discount, center=True):
 		#not batchwise!!! only meant to be used with a single episode
 
 		r = torch.zeros_like(list_of_rewards)
-		for i in range(list_of_rewards.shape[1]):
-			r[:, i] = discount**i * list_of_rewards[:, i]
+		# for i in range(list_of_rewards.shape[1]):
+		for i in range(list_of_rewards.shape[0]):
+			# r[:, i] = discount**i * list_of_rewards[:, i]
+			r[i] = discount**i * list_of_rewards[i]
 
 		#r = torch.tensor([discount**i * list_of_rewards[:,i] for i in range(list_of_rewards.shape[1])])#.requires_grad_()
 		discounted = torch.zeros_like(list_of_rewards)
 		
-		for i in range(r.shape[1]):
-			discounted[:,i] = torch.sum(r[:, i:], dim=1)
+		# for i in range(r.shape[1]):
+		for i in range(r.shape[0]):
+			#discounted[:,i] = torch.sum(r[:, i:], dim=1)
+			discounted[i] = torch.sum(r[i:], dim=0)
 
 		# discounted_batch[batch] = torch.tensor([torch.sum(discount**i * list_of_rewards[batch,i:]) for i in range(list_of_rewards.shape[1])]).requires_grad_()
 		
@@ -61,6 +67,71 @@ def discount_rewards(list_of_rewards, discount, center=True):
 		else:
 			return discounted
 
+
+def lin_dyn(steps, policy, all_rewards, x=None, discount=0.9):
+	
+	A = np.array([[0.9, 0.4], [-0.4, 0.9]])
+	#B = np.eye(2)
+#    print linalg.eig(A)[0], np.abs(linalg.eig(A)[0])
+	if x is None:        
+		x = np.array([1.,0.])
+		
+	EYE = np.eye(x.shape[0])
+
+	x_list = [x]
+	u_list = []
+	r_list = []
+	for m in range(steps):
+		params = policy(torch.DoubleTensor(x))
+		params = (params[0].detach(), params[1].detach())
+		c = Normal(*params)
+		u = torch.clamp(c.rsample(), min=-10., max=10.).numpy()
+		#u = np.zeros_like(x)
+		u_list.append(u)
+
+		r = -(np.dot(x.T, x) + np.dot(u.T,u))
+
+		x_next = A.dot(x) + u
+		x_list.append(x_next)
+		r_list.append(r)
+		x = x_next
+	
+	x_list = np.array(x_list)
+	u_list = np.array(u_list)
+	r_list = np.array(r_list)
+
+	x_curr = x_list[:-1,:]
+	x_next = x_list[1:,:]
+#    r = x_curr[:,0]
+	# Quadratic reward
+
+	#change reward:
+	#r_list = -np.clip(x_curr[:,0]**2, 0., 1.0)
+
+	all_rewards.append(sum(r_list))
+
+	returns1 = discount_rewards(r_list, discount, center=True)
+	#returns2 = discount_rewards(r2, discount, center=True)
+
+#    r = float32(x_curr[:,0] > 0.1)
+	
+#    return x_list, r
+	return x_curr, x_next, u_list, returns1, r_list
+
+
+
+def add_irrelevant_features(x, x_next, extra_dim, noise_level = 0.4):
+
+#    x_irrel= np.random.random((x.shape[0], extra_dim))
+	x_irrel= noise_level*np.random.randn(x.shape[0], extra_dim)
+#    x_irrel_next = x_irrel**2 + 1.0
+#    x_irrel_next = x_irrel**2
+#    x_irrel_next = 0.1*np.random.random((x.shape[0], extra_dim))
+	x_irrel_next = noise_level*np.random.randn(x.shape[0], extra_dim)
+#    x_irrel_next = x_irrel**2 + noise_level*np.random.randn(x.shape[0], extra_dim)    
+#    x_irrel_next = x_irrel**2 + np.random.random((x.shape[0], extra_dim))
+	
+	return np.hstack([x, x_irrel]), np.hstack([x_next, x_irrel_next])
 
 
 def convert_one_hot(a, dim):
@@ -78,7 +149,7 @@ def convert_one_hot(a, dim):
 
 
 def roll_1(x, n):  
-    return torch.cat((x[:, -n:], x[:, :-n]), dim=1)
+	return torch.cat((x[:, -n:], x[:, :-n]), dim=1)
 
 
 
@@ -95,23 +166,24 @@ def shift_down(x, step, full_size):
 		raise NotImplementedError('shape {shape_x} of input not corrent or implemented'.format(shape_x=x.shape))
 
 
-
 def roll_left(x, n):  
-    #return torch.cat((x[-n:], x[:-n]))
-    return torch.cat((x[n:], x[:n]))
+	#return torch.cat((x[-n:], x[:-n]))
+	return torch.cat((x[n:], x[:n]))
 
 
 
-def get_selected_log_probabilities(policy_estimator, states_tensor, actions_tensor, batch_actions):
+def get_selected_log_probabilities(policy_estimator, states_tensor, actions_tensor):#, batch_actions):
 	action_probs = policy_estimator(states_tensor)
 
 	if not policy_estimator.continuous:
-		log_probs = torch.log(action_probs[0])
-		selected_log_probs = torch.index_select(log_probs, 1, actions_tensor)[range(len(batch_actions)), range(len(batch_actions))]
+		log_probs = torch.log(torch.clamp(action_probs[0],min=1e-5))
+		if ((log_probs < -100).any()):
+			pdb.set_trace()
+
+		selected_log_probs = torch.index_select(log_probs, 1, actions_tensor)[range(len(actions_tensor)), range(len(actions_tensor))]
 	else:
 		n = Normal(*action_probs)
 		selected_log_probs = n.log_prob(actions_tensor)
-
 	return selected_log_probs
 
 

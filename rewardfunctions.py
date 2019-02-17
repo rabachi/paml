@@ -14,6 +14,11 @@ MAX_TORQUE = 2.
 _DEFAULT_VALUE_AT_MARGIN = 0.1
 
 def get_reward_fn(env, states_tensor, actions_tensor):
+	if env == 'lin_dyn':
+		rewards = -(torch.einsum('ij,ij->i', [states_tensor, states_tensor]) + torch.einsum('ij,ij->i', [actions_tensor, actions_tensor]))
+		#rewards = torch.clamp(states_tensor[:,0]**2, min=0., max=1.0)
+		return torch.DoubleTensor(rewards)
+
 	if env.spec.id == 'Pendulum-v0':
 		thcos = states_tensor[:,:,0]
 		thsin = states_tensor[:,:,1]
@@ -38,19 +43,18 @@ def get_reward_fn(env, states_tensor, actions_tensor):
 	elif env.spec.id == 'CartPole-v0':
 		theta_threshold_radians = 12 * 2 * np.pi / 360
 		x_threshold = 2.4
-
 		x = states_tensor[:,:,0]
 		#x_dot = states_tensor[:,:,1]
 		theta = states_tensor[:,:,2]
 		#theta_dot = states_tensor[:,:,3]
 
 		#this is a problem because ITS A BIG MATRIX WITH BATCHES AND DIFFERENT TIME STEPS!!!!!!  
-		# done =  x < -x_threshold \
-		# 		or x > x_threshold \
-		# 		or theta < -theta_threshold_radians \
-		# 		or theta > theta_threshold_radians
-		# done = bool(done)
-
+		done =  (x < -x_threshold) \
+				| (x > x_threshold) \
+				| (theta < -theta_threshold_radians) \
+				| (theta > theta_threshold_radians)
+		#done = bool(done)
+		return done.transpose(1,0)
 		# if not done:
   #           reward = 1.0
   #       elif self.steps_beyond_done is None:
@@ -64,10 +68,13 @@ def get_reward_fn(env, states_tensor, actions_tensor):
   #           reward = 0.0
 
 	elif env.spec.id == 'dm_cartpole_balance':
+
 		states = states_tensor.cpu().detach().numpy()
+		print(states)
+		states = np.swapaxes(np.atleast_3d(states), 1,2)
 		pole_angle_cosine = states[:,:,1]
 		cart_position = states[:,:,0]
-		angular_vel = states[:,:,3]
+		angular_vel = states[:,:,]
 
 		control = actions_tensor.cpu().detach().numpy().squeeze()
 
@@ -77,7 +84,7 @@ def get_reward_fn(env, states_tensor, actions_tensor):
 		centered = tolerance(cart_position, margin=2)
 		centered = (1 + centered) / 2
 		small_control = tolerance(actions_tensor, margin=1,
-						value_at_margin=0.01,
+						value_at_margin=0.000000001,
 						sigmoid='quadratic')[0]
 		small_control = (4 + small_control) / 5
 

@@ -11,6 +11,57 @@ from torch.distributions import Categorical, Normal, MultivariateNormal
 import pdb
 
 from utils import *
+from collections import namedtuple
+import random
+from torchviz import make_dot
+
+def init_weights(m):
+	if isinstance(m, nn.Linear):
+		nn.init.normal_(m.weight, mean=0., std=0.1)
+		nn.init.constant_(m.bias, 0.1)
+		
+
+
+Transition = namedtuple('Transition',('state', 'next_state', 'action', 'reward'))
+
+# Using PyTorch's Tutorial
+class ReplayMemory(object):
+
+	def __init__(self, size):
+		self.size = size
+		self.memory = []
+		self.position = 0
+
+	def push(self, *args):
+		"""Saves a transition."""
+		
+		if len(self.memory) < self.size:
+			self.memory.append(None)
+
+		self.memory[self.position] = Transition(*args)
+		self.position = (self.position + 1) % self.size
+
+	def clear(self):
+		self.memory = []
+		self.position = 0
+
+	def sample(self, batch_size, structured=False, max_actions=10, num_episodes=10):
+		if structured:
+			#batch_size = number of episodes to return
+			#max_actions = constant that is the length of the episode
+			batch = np.empty(batch_size, object)
+			for b in range(batch_size):
+				ep = np.random.choice(range(num_episodes))
+				batch[b] = self.memory[ep:ep+max_actions]
+
+			return batch
+			
+		else:
+			return random.sample(self.memory, batch_size)
+
+	def __len__(self):
+		return len(self.memory)
+
 
 
 class Policy(nn.Module):
@@ -18,18 +69,17 @@ class Policy(nn.Module):
 		super(Policy, self).__init__()
 		self.n_actions = out_dim
 		self.continuous = continuous
-		self.lin1 = nn.Linear(in_dim, 4)
+		self.lin1 = nn.Linear(in_dim, 16)
 		self.relu = nn.ReLU()
-		self.theta = nn.Linear(4, out_dim)
+		self.theta = nn.Linear(16, out_dim)
 
 		torch.nn.init.xavier_uniform_(self.lin1.weight)
 		torch.nn.init.xavier_uniform_(self.theta.weight)
 
 		if continuous:
 			#self.log_std = nn.Linear(16, out_dim)
-			#self.log_std = nn.Parameter(torch.ones(out_dim) * std, requires_grad=False)
-			self.log_std = (torch.ones(out_dim) * std).type(torch.DoubleTensor)
-
+			self.log_std = nn.Parameter(torch.ones(out_dim) * std, requires_grad=True)
+			#self.log_std = (torch.ones(out_dim) * std).type(torch.DoubleTensor)
 
 	def forward(self, x):
 		phi = self.relu(self.lin1(x))
@@ -37,11 +87,11 @@ class Policy(nn.Module):
 		if not self.continuous:
 			y = self.theta(phi)
 			out = nn.Softmax(dim=-1)(y)
-
+			out = torch.clamp(out, min=-1e-4, max=100)
 			return out, 0
 
 		else:
-			mu = 0.5*nn.Tanh()(self.theta(phi))
+			mu = nn.Tanh()(self.theta(phi))
 			#sigma = torch.exp(self.log_std(phi))
 			sigma = self.log_std.exp().expand_as(mu)
 
@@ -294,7 +344,7 @@ class DirectEnvModel(torch.nn.Module):
 		probs = torch.distributions.Uniform(low=-0.1, high=0.1)
 		self.state = probs.sample(torch.zeros(self.n_states).size())
 		self.steps_beyond_done = None
-		return self.state
+		return self.state.type(torch.DoubleTensor)
 
 	def forward(self, x):
 		x = self.fc1(x)
@@ -328,6 +378,61 @@ class DirectEnvModel(torch.nn.Module):
 
 		return mu#, reward_value, 0
 
+
+	def unroll(self, state_action, policy, n_states, steps_to_unroll=2, continuous_actionspace=True):
+		if state_action is None:
+			return -1	
+
+		max_actions = state_action.shape[0]
+		x_list = [state_action[:,:n_states]]
+		a_list = [state_action[:,n_states:]]
+		r_list = []
+
+		for s in range(steps_to_unroll):
+			if torch.isnan(torch.sum(state_action)):
+					print('found nan in state')
+					print(state_action)
+					pdb.set_trace()
+			x_next = self.forward(state_action)
+			action_taken = state_action[:,n_states:]
+			r = get_reward_fn('lin_dyn', x_next, action_taken)
+
+			with torch.no_grad():
+				action_probs = policy(torch.DoubleTensor(x_next))
+
+				if not continuous_actionspace:
+					c = Categorical(action_probs[0])
+					a = c.sample() 
+					next_state_action = torch.cat((x_next, convert_one_hot(a.double(), n_actions).unsqueeze(2)),dim=2)
+				else:
+					c = Normal(*action_probs)
+					a = torch.clamp(c.rsample(), min=-MAX_TORQUE, max=MAX_TORQUE)
+					next_state_action = torch.cat((x_next, a),dim=1)
+
+			#since we're unrolling the last s states past the termination, we have to set the rewards for those predicted states to 0 because we have no data to learn from those
+			if s > 0:
+				r[-s:] = 0 
+			a_list.append(a)
+			r_list.append(r.unsqueeze(1))
+			x_list.append(x_next)
+
+			state_action = next_state_action
+
+		#x_list = torch.stack(x_list)
+		x_list = torch.cat(x_list, 1).view(max_actions, steps_to_unroll+1, n_states)
+		a_list = torch.cat(a_list, 1).view(max_actions, steps_to_unroll +1, a.shape[1])
+		r_list = torch.cat(r_list, 1).view(max_actions, steps_to_unroll, 1)
+	
+		x_curr = x_list[:,:-1,:]
+		x_next = x_list[:,1:,:]
+		a_used = a_list[:,:-1]
+
+		return x_curr, x_next, a_used, r_list
+
+		# #only need rewards from model for the steps we've unrolled, the rest is assumed to be equal to the environment's
+		# model_rewards[:, step] = get_reward_fn('lin_dyn', shortened, a)
+		# model_log_probs = get_selected_log_probabilities(policy, shortened, a)
+		#don't need states, just the log probabilities 
 
 	def train_paml(self, env, pe, states_prev, states_next, actions_tensor, rewards_tensor, epochs, max_actions, R_range, discount, opt, continuous_actionspace, losses, device='cpu'):
 

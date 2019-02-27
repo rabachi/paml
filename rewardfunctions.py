@@ -15,7 +15,7 @@ _DEFAULT_VALUE_AT_MARGIN = 0.1
 
 def get_reward_fn(env, states_tensor, actions_tensor):
 	if env == 'lin_dyn':
-		rewards = -(torch.einsum('ij,ij->i', [states_tensor, states_tensor]) + torch.einsum('ij,ij->i', [actions_tensor, actions_tensor]))
+		rewards = -(torch.einsum('ijk,ijk->ij', [states_tensor, states_tensor]) + torch.einsum('ijk,ijk->ij', [actions_tensor, actions_tensor]))
 		#rewards = torch.clamp(states_tensor[:,0]**2, min=0., max=1.0)
 		return torch.DoubleTensor(rewards)
 
@@ -38,7 +38,6 @@ def get_reward_fn(env, states_tensor, actions_tensor):
 		costs = angle_normalize(th)**2 + .1*thdot**2 + .001*(u**2)
 
 		return -costs.unsqueeze(2)
-
 
 	elif env.spec.id == 'CartPole-v0':
 		theta_threshold_radians = 12 * 2 * np.pi / 360

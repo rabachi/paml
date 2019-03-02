@@ -33,7 +33,7 @@ if __name__ == "__main__":
 	num_episodes = 100
 	max_actions = 10
 	num_states = max_actions + 1
-	num_iters = 53
+	num_iters = 63
 	opt_step_def = 50
 	discount = 0.9
 	R_range = 1
@@ -244,6 +244,9 @@ if __name__ == "__main__":
 				best_loss = loss.detach()  
 
 			loss.backward()
+
+			if i == (num_iters-3) / 3:
+				R_range = 2
 
 			if i < num_iters-1:
 				nn.utils.clip_grad_value_(P_hat.parameters(), 4.0)

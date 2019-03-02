@@ -6,6 +6,7 @@ import sys
 import torch
 import math
 from torch import nn
+import torch.nn.functional as F
 from torch import optim
 from torch.distributions import Categorical, Normal, MultivariateNormal
 import pdb
@@ -14,6 +15,9 @@ from utils import *
 from collections import namedtuple
 import random
 from torchviz import make_dot
+
+
+device='cpu'
 
 def init_weights(m):
 	if isinstance(m, nn.Linear):
@@ -235,6 +239,49 @@ class DirectEnvModel(torch.nn.Module):
 					step_state = torch.cat((next_step_state,a),dim=2)
 			
 		return squared_errors
+	
+	def train_mle(self, pe, state_actions, states_next, epochs, max_actions, R_range, opt, env_name, continuous_actionspace, losses):
+		best_loss = 20
+		for i in range(epochs):
+			opt.zero_grad()
+
+			squared_errors = torch.zeros_like(states_next)
+			step_state = state_actions.to(device)
+
+			for step in range(R_range):
+				next_step_state = self.forward(step_state)
+
+				squared_errors += F.pad(input=(states_next[:,step:,:] - next_step_state)**2, pad=(0,0,step,0,0,0), mode='constant', value=0)
+
+				#rolled_out_states_sums += shift_down(next_step_state,step, max_actions)
+
+				shortened = next_step_state[:,:-1,:]
+				action_probs = pe(torch.DoubleTensor(shortened))
+				
+				if not continuous_actionspace:
+					c = Categorical(action_probs)
+					a = c.sample() 
+					step_state = torch.cat((shortened,convert_one_hot(a, self.n_actions)),dim=2)
+				else:
+					c = Normal(*action_probs)
+					a = torch.clamp(c.rsample(), min=-self.max_torque, max=self.max_torque)
+					step_state = torch.cat((shortened,a),dim=2)
+
+			#state_loss = torch.mean(squared_errors)#torch.mean((states_next - rolled_out_states_sums)**2)
+
+			model_loss = torch.mean(squared_errors) #+ reward_loss)# + done_loss)
+			print("R_range: {}, negloglik  = {:.7f}".format(R_range, model_loss.data.cpu()))
+
+			if model_loss < best_loss:
+				torch.save(self.state_dict(), env_name+'_mle_trained_model.pth')
+				#torch.save(P_hat, 'mle_trained_model.pth')
+				best_loss = model_loss  
+
+				model_loss.backward()
+				opt.step()
+				losses.append(model_loss.data.cpu())
+		return best_loss
+
 
 
 class PCPModel(torch.nn.Module):

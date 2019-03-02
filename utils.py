@@ -6,6 +6,7 @@ import sys
 import torch
 import math
 from torch import nn
+import torch.nn.functional as F
 from torch import optim
 from torch.distributions import Categorical, Normal, MultivariateNormal
 from torch.autograd import grad
@@ -215,13 +216,13 @@ def shift(x, step, dir='up'):
 
 	if len(x.shape) == 3: #batch_wise
 		if dir=='down':
-			return torch.cat((torch.zeros((x.shape[0], step, x.shape[2])).double(),x),dim=1)[:,:step]
+			return torch.cat((torch.zeros((x.shape[0], step, x.shape[2])).double(),x),dim=1)[:,:-step]
 		elif dir=='up':
 			return torch.cat((x,torch.zeros((x.shape[0], step, x.shape[2])).double()),dim=1)[:,step:]
 
 	elif len(x.shape) == 2: 
 		if dir=='down':
-			return torch.cat((torch.zeros((step, x.shape[1])).double(),x),dim=0)[:step]
+				return torch.cat((torch.zeros((step, x.shape[1])).double(),x),dim=0)[:-step]
 		elif dir=='up':
 			return torch.cat((x,torch.zeros((step, x.shape[1])).double()),dim=0)[step:]
 
@@ -252,46 +253,56 @@ def get_selected_log_probabilities(policy_estimator, states_tensor, actions_tens
 
 
 #################### IGNORE BELOW ##############################
-# def mle_validation_loss(P_hat, policy, val_states_next_tensor, state_actions_val, n_actions, max_actions, continuous_actionspace=False, device='cpu'):
+def mle_multistep_loss(P_hat, policy, val_states_next_tensor, state_actions_val, n_actions, max_actions, continuous_actionspace=False, device='cpu'):
 
-# 	squared_errors_val = torch.zeros_like(val_states_next_tensor)
-# 	step_state_val = state_actions_val.to(device)
+	squared_errors_val = torch.zeros_like(val_states_next_tensor)
 
-# 	with torch.no_grad():
-# 		for step in range(max_actions-1):
-# 			next_step_state_val = P_hat(step_state_val)
-# 			squared_errors_val += shift_down((val_states_next_tensor[:,step:,:] - next_step_state_val)**2, step, max_actions)
+	step_state_val = state_actions_val.to(device)[:,:18]
 
-# 			shortened_val = next_step_state_val[:,:-1,:]
-# 			action_probs_val = policy(torch.DoubleTensor(shortened_val))
+	with torch.no_grad():
+		for step in range(max_actions*2-1):
+			next_step_state_val = P_hat(step_state_val)
+
+			if step==0:
+				err1_step = torch.mean((val_states_next_tensor[:,:18] - next_step_state_val)**2)
+			elif step == 5:
+				err5_step = torch.mean((val_states_next_tensor[:,5:23] - next_step_state_val)**2)
+			elif step == 10:
+				err10_step = torch.mean((val_states_next_tensor[:,10:28] - next_step_state_val)**2)
+			elif step == 18:
+				err20_step = torch.mean((val_states_next_tensor[:,18:36] - next_step_state_val)**2)
+
+			#squared_errors_val += F.pad(input=(val_states_next_tensor[:,step:,:] - next_step_state_val)**2, pad=(0,0,step,0,0,0), mode='constant', value=0)
+			shortened_val = next_step_state_val
+			action_probs_val = policy(torch.DoubleTensor(shortened_val))
 			
-# 			if not continuous_actionspace:
-# 				c_val = Categorical(action_probs_val[0])
-# 				a_val = c_val.sample().type(torch.DoubleTensor).to(device)
-# 				step_state_val = torch.cat((shortened_val, convert_one_hot(a_val, n_actions).unsqueeze(2)),dim=2)
-# 			else:
-# 				c_val = Normal(*action_probs_val)
-# 				a_val = torch.clamp(c_val.rsample(), min=-2.0, max=2.0)
-# 				step_state_val = torch.cat((shortened_val, a_val),dim=2)
+			if not continuous_actionspace:
+				c_val = Categorical(action_probs_val[0])
+				a_val = c_val.sample().type(torch.DoubleTensor).to(device)
+				step_state_val = torch.cat((shortened_val, convert_one_hot(a_val, n_actions).unsqueeze(2)),dim=2)
+			else:
+				c_val = Normal(*action_probs_val)
+				a_val = torch.clamp(c_val.rsample(), min=-2.0, max=2.0)
+				step_state_val = torch.cat((shortened_val, a_val),dim=2)
 
-# 	# if squared_errors_val.shape < 2:
-# 	# 	squared_errors_val.unsqueeze(0)
+	# if squared_errors_val.shape < 2:
+	# 	squared_errors_val.unsqueeze(0)
 	
-# 	err_1step = torch.mean(squared_errors_val[:,1])
-# 	err_5step = torch.mean(squared_errors_val[:,5])
+	# err_1step = torch.mean(squared_errors_val[:,1])
+	# err_5step = torch.mean(squared_errors_val[:,5])
+	# err_10step = torch.mean(squared_errors_val[:,10])
+	# err_10step = torch.mean(squared_errors_val[:,19])
 
-# 	try:
-# 		err_10step = torch.mean(squared_errors_val[:,10])
-# 		err_50step = torch.mean(squared_errors_val[:,50])
-# 		err_100step = torch.mean(squared_errors_val[:,100])
-# 	except:
-# 		err_10step = 0
-# 		err_50step = 0
-# 		err_100step = torch.mean(squared_errors_val[:,-1])
+	# try:
+	# 	err_50step = torch.mean(squared_errors_val[:,50])
+	# 	err_100step = torch.mean(squared_errors_val[:,100])
+	# except:
+	# 	err_50step = 0
+	# 	err_100step = torch.mean(squared_errors_val[:,-1])
 
-# 	print("Multistep error values:", err_1step, err_5step, err_10step, err_50step, err_100step, "\n")	
+	print("Multistep error values:", err1_step, err5_step, err10_step, err20_step, "\n")	
 
-# 	return squared_errors_val
+	return err1_step
 
 
 

@@ -30,10 +30,10 @@ MAX_TORQUE = 1.
 if __name__ == "__main__":
 	#initialize pe 
 	num_episodes = 100
-	max_actions = 10
-	num_iters = 2000
+	max_actions = 20
+	num_iters = 5000
 	discount = 0.9
-	R_range = 3
+	R_range = 1
 	batch_size = 50
 	##########for deepmind setup###################
 	#dm_control2gym.create_render_mode('rs', show=False, return_pixel=True, height=240, width=320, camera_id=-1, overlays=(), depth=False, scene_option=None)
@@ -59,7 +59,9 @@ if __name__ == "__main__":
 
 
 	##########for linear system setup#############
-	dataset = ReplayMemory(20000)
+	dataset = ReplayMemory(200000)
+	validation_dataset = ReplayMemory(20000)
+	validation_num = math.floor(num_episodes/4)
 	x_d = np.zeros((0,2))
 	x_next_d = np.zeros((0,2))
 	r_d = np.zeros((0))
@@ -84,7 +86,7 @@ if __name__ == "__main__":
 	P_hat.double()
 	pe.double()
 
-	opt = optim.SGD(P_hat.parameters(), lr = 1e-6, momentum=0.99)
+	opt = optim.SGD(P_hat.parameters(), lr = 1e-5, momentum=0.99)
 	lr_schedule = torch.optim.lr_scheduler.MultiStepLR(opt, milestones=[1000,1250,1500], gamma=0.1)
 	#1. Gather data, 2. train model with mle 3. reinforce 4. run policy, add new data to data
 
@@ -96,14 +98,22 @@ if __name__ == "__main__":
 	epoch = 0
 	x_plot = np.zeros((num_episodes * 20, 2))
 	for ep in range(num_episodes):
-		x_0 = 2*np.random.random( size = (2,) ) - 0.5
-		x_tmp, x_next_tmp, u_list, r_tmp, _ = lin_dyn(20, pe, [], x=x_0)
+		x_0 = 2*np.random.random(size = (2,)) - 0.5
+		x_tmp, x_next_tmp, u_list, r_tmp, _ = lin_dyn(max_actions, pe, [], x=x_0)
 
 		for x, x_next, u, r in zip(x_tmp, x_next_tmp, u_list, r_tmp):
 			dataset.push(x, x_next, u, r)
 
 		x_plot[ep: ep + 20] = x_tmp
 
+
+	#get validation data
+	for ep in range(validation_num):
+		x_0 = 2*np.random.random(size = (2,)) - 0.5
+		x_tmp, x_next_tmp, u_list, r_tmp, _ = lin_dyn(max_actions*2, pe, [], x=x_0)
+
+		for x, x_next, u, r in zip(x_tmp, x_next_tmp, u_list, r_tmp):
+			validation_dataset.push(x, x_next, u, r)
 
 		# s = env.reset()
 		# states = [s]
@@ -154,6 +164,27 @@ if __name__ == "__main__":
 
 
 		#unindented from here
+
+	#validation data
+	val_data = validation_dataset.sample(validation_num, structured=True, max_actions=max_actions*2, num_episodes=validation_num)
+
+	val_states_prev = torch.zeros((validation_num, max_actions*2, states_dim)).double()
+	val_states_next = torch.zeros((validation_num, max_actions*2, states_dim)).double()
+	val_rewards = torch.zeros((validation_num, max_actions*2)).double()
+	val_actions_tensor = torch.zeros((validation_num, max_actions*2, actions_dim)).double()
+	#discounted_rewards_tensor = torch.zeros((batch_size, max_actions, 1)).double()
+
+	for v in range(validation_num):
+		#batch = dataset.sample(max_actions, structured=True, num_episodes=num_episodes)
+		val_states_prev[v] = torch.tensor([samp.state for samp in val_data[v]]).double()
+		val_states_next[v] = torch.tensor([samp.next_state for samp in val_data[v]]).double()
+		val_rewards[v] = torch.tensor([samp.reward for samp in val_data[v]]).double()
+		val_actions_tensor[v] = torch.tensor([samp.action for samp in val_data[v]]).double()
+		#discounted_rewards_tensor[b] = discount_rewards(rewards[b].unsqueeze(1), discount, center=False).to(device)
+
+	val_state_actions = torch.cat((val_states_prev,val_actions_tensor), dim=2)
+	first_val_loss = mle_multistep_loss(P_hat, pe, val_states_next, val_state_actions, actions_dim, max_actions, continuous_actionspace=continuous_actionspace)
+
 	for i in range(num_iters):
 		batch = dataset.sample(batch_size, structured=True, max_actions=max_actions, num_episodes=num_episodes)
 
@@ -182,50 +213,65 @@ if __name__ == "__main__":
 		opt.zero_grad()
 		
 		#rolled_out_states_sums = torch.zeros_like(states_next)
-		squared_errors = 0
-		step_state = state_actions.to(device)
+		# squared_errors = 0
+		# step_state = state_actions.to(device)
 
-		for step in range(R_range):
-			next_step_state = P_hat(step_state)
+		best = P_hat.train_mle(pe, state_actions, batch_states_next, 1, max_actions, R_range, opt, "lin_dyn", continuous_actionspace, losses)
 
-			#squared_errors += shift_down((states_next[:,step:,:] - next_step_state)**2, step, max_actions)
-			if step > 0:
-				squared_errors += torch.sum((batch_states_next[:,step:] - next_step_state[:,:-step,:])**2)
-			else:
-				squared_errors += torch.sum((batch_states_next - next_step_state)**2)
-
-			#rolled_out_states_sums += shift_down(next_step_state,step, max_actions)
-
-			###########
-			# shortened = next_step_state[:,:-1,:]
-			action_probs = pe(torch.DoubleTensor(next_step_state))
-			
-			if not continuous_actionspace:
-				c = Categorical(action_probs)
-				a = c.sample() 
-				step_state = torch.cat((shortened,convert_one_hot(a, actions_dim)),dim=2)
-			else:
-				c = Normal(*action_probs)
-				a = torch.clamp(c.rsample(), min=-MAX_TORQUE, max=MAX_TORQUE)
-				step_state = torch.cat((next_step_state,a),dim=2)
-			##################
-
-		#state_loss = torch.sum(torch.sum(squared_errors, dim=1),dim=1)
-		#model_loss = torch.mean(state_loss) #+ reward_loss)# + done_loss)
-		model_loss = squared_errors
+		if best < first_val_loss * 0.1 and R_range < max_actions - 1:
+			R_range += 1
 		
-		if model_loss < best_loss:
-			torch.save(P_hat.state_dict(), 'lin_dyn_' + str(R_range) + '_mle_trained_model.pth')
-			#torch.save(P_hat, 'mle_trained_model.pth')
-			best_loss = model_loss  
+			mle_multistep_loss(P_hat, pe, val_states_next, val_state_actions, actions_dim, max_actions, continuous_actionspace=continuous_actionspace)
 
-		model_loss.backward()
-		grads.append(torch.sum(P_hat.fc1.weight.grad))
+		# for step in range(R_range):
+		# 	next_step_state = P_hat(step_state)
 
-		opt.step()
-		losses.append(model_loss.data.cpu())
-		lr_schedule.step()
-		print("ep: {}, negloglik  = {:.7f}".format(i, model_loss.data.cpu()))
+		# 	#squared_errors += shift_down((states_next[:,step:,:] - next_step_state)**2, step, max_actions)
+		# 	if step > 0:
+		# 		squared_errors += torch.mean((batch_states_next[:,step:] - next_step_state[:,:-step,:])**2)
+		# 	else:
+		# 		squared_errors += torch.mean((batch_states_next - next_step_state)**2)
+
+		# 	#rolled_out_states_sums += shift_down(next_step_state,step, max_actions)
+
+		# 	###########
+		# 	# shortened = next_step_state[:,:-1,:]
+		# 	action_probs = pe(torch.DoubleTensor(next_step_state))
+			
+		# 	if not continuous_actionspace:
+		# 		c = Categorical(action_probs)
+		# 		a = c.sample() 
+		# 		step_state = torch.cat((shortened,convert_one_hot(a, actions_dim)),dim=2)
+		# 	else:
+		# 		c = Normal(*action_probs)
+		# 		a = torch.clamp(c.rsample(), min=-MAX_TORQUE, max=MAX_TORQUE)
+		# 		step_state = torch.cat((next_step_state,a),dim=2)
+		# 	##################
+
+		# #state_loss = torch.sum(torch.sum(squared_errors, dim=1),dim=1)
+		# #model_loss = torch.mean(state_loss) #+ reward_loss)# + done_loss)
+		# model_loss = squared_errors
+		
+		# if model_loss < best_loss:
+		# 	torch.save(P_hat.state_dict(), 'lin_dyn_' + str(R_range) + '_mle_trained_model.pth')
+		# 	#torch.save(P_hat, 'mle_trained_model.pth')
+		# 	best_loss = model_loss  
+
+		# model_loss.backward()
+		# grads.append(torch.sum(P_hat.fc1.weight.grad))
+
+		# opt.step()
+		# losses.append(model_loss.data.cpu())
+		# lr_schedule.step()
+		# if i % 20 == 0:
+		# 	print("ep: {}, negloglik  = {:.7f}".format(i, model_loss.data.cpu()))
+
+		# if i == num_iters/4:
+		# 	print("R_range changed!")
+		# 	R_range = 2
+		# elif i == num_iters/2:
+		# 	print("R_range changed!")
+		# 	R_range = 3
 
 	# if ep % 1 ==0:
 	# 	if loss_name == 'paml':

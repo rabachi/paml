@@ -18,6 +18,7 @@ from scipy import linalg
 
 
 #device = 'cuda' if torch.cuda.is_available() else 'cpu'
+device = 'cpu'
 
 def discount_rewards(list_of_rewards, discount, center=True, batch_wise=False):
 	# r_tensor = torch.DoubleTensor(list_of_rewards)
@@ -139,10 +140,10 @@ def lin_dyn(steps, policy, all_rewards, x=None, discount=0.9):
 	u_list = []
 	r_list = []
 	for m in range(steps):
-		params = policy(torch.DoubleTensor(x))
+		params = policy(torch.DoubleTensor(x).to(device))
 		params = (params[0].detach(), params[1].detach())
 		c = Normal(*params)
-		u = torch.clamp(c.rsample(), min=-10., max=10.).numpy()
+		u = torch.clamp(c.rsample(), min=-1., max=1.).cpu().numpy()
 		#u = np.zeros_like(x)
 		u_list.append(u)
 
@@ -216,15 +217,15 @@ def shift(x, step, dir='up'):
 
 	if len(x.shape) == 3: #batch_wise
 		if dir=='down':
-			return torch.cat((torch.zeros((x.shape[0], step, x.shape[2])).double(),x),dim=1)[:,:-step]
+			return torch.cat((torch.zeros((x.shape[0], step, x.shape[2])).double().to(device),x),dim=1)[:,:-step]
 		elif dir=='up':
-			return torch.cat((x,torch.zeros((x.shape[0], step, x.shape[2])).double()),dim=1)[:,step:]
+			return torch.cat((x,torch.zeros((x.shape[0], step, x.shape[2])).double().to(device)),dim=1)[:,step:]
 
 	elif len(x.shape) == 2: 
 		if dir=='down':
-				return torch.cat((torch.zeros((step, x.shape[1])).double(),x),dim=0)[:-step]
+				return torch.cat((torch.zeros((step, x.shape[1])).double().to(device),x),dim=0)[:-step]
 		elif dir=='up':
-			return torch.cat((x,torch.zeros((step, x.shape[1])).double()),dim=0)[step:]
+			return torch.cat((x,torch.zeros((step, x.shape[1])).double().to(device)),dim=0)[step:]
 
 	else:
 		raise NotImplementedError('shape {shape_x} of input not corrent or implemented'.format(shape_x=x.shape))

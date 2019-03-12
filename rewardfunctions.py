@@ -17,7 +17,7 @@ def get_reward_fn(env, states_tensor, actions_tensor):
 	if env == 'lin_dyn':
 		rewards = -(torch.einsum('ijk,ijk->ij', [states_tensor, states_tensor]) + torch.einsum('ijk,ijk->ij', [actions_tensor, actions_tensor]))
 		#rewards = torch.clamp(states_tensor[:,0]**2, min=0., max=1.0)
-		return torch.DoubleTensor(rewards)
+		return rewards
 
 	if env.spec.id == 'Pendulum-v0':
 		thcos = states_tensor[:,:,0]

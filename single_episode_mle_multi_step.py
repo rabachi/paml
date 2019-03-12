@@ -29,12 +29,12 @@ MAX_TORQUE = 1.
 
 if __name__ == "__main__":
 	#initialize pe 
-	num_episodes = 100
-	max_actions = 20
+	num_episodes = 1000
+	max_actions = 10
 	num_iters = 5000
 	discount = 0.9
-	R_range = 1
-	batch_size = 50
+	R_range = 2
+	batch_size = 1000
 	##########for deepmind setup###################
 	#dm_control2gym.create_render_mode('rs', show=False, return_pixel=True, height=240, width=320, camera_id=-1, overlays=(), depth=False, scene_option=None)
 
@@ -108,8 +108,9 @@ if __name__ == "__main__":
 
 
 	#get validation data
+	x_0 = 2*np.random.random(size = (2,)) - 0.5
 	for ep in range(validation_num):
-		x_0 = 2*np.random.random(size = (2,)) - 0.5
+		
 		x_tmp, x_next_tmp, u_list, r_tmp, _ = lin_dyn(max_actions*2, pe, [], x=x_0)
 
 		for x, x_next, u, r in zip(x_tmp, x_next_tmp, u_list, r_tmp):
@@ -218,10 +219,10 @@ if __name__ == "__main__":
 
 		best = P_hat.train_mle(pe, state_actions, batch_states_next, 1, max_actions, R_range, opt, "lin_dyn", continuous_actionspace, losses)
 
-		if best < first_val_loss * 0.1 and R_range < max_actions - 1:
-			R_range += 1
+		# if best < first_val_loss * 0.1 and R_range < max_actions - 1:
+		# 	R_range += 1
 		
-			mle_multistep_loss(P_hat, pe, val_states_next, val_state_actions, actions_dim, max_actions, continuous_actionspace=continuous_actionspace)
+	mle_multistep_loss(P_hat, pe, val_states_next, val_state_actions, actions_dim, max_actions, continuous_actionspace=continuous_actionspace)
 
 		# for step in range(R_range):
 		# 	next_step_state = P_hat(step_state)

@@ -68,10 +68,11 @@ class ReplayMemory(object):
 
 
 class Policy(nn.Module):
-	def __init__(self, in_dim, out_dim, continuous=False, std=-0.8):#-0.8 GOOD
+	def __init__(self, in_dim, out_dim, continuous=False, std=-0.8, max_torque=1. ):#-0.8 GOOD
 		super(Policy, self).__init__()
 		self.n_actions = out_dim
 		self.continuous = continuous
+		self.max_torque = max_torque
 		#self.lin1 = nn.Linear(in_dim, 4)
 		#self.relu = nn.ReLU()
 		#self.theta = nn.Linear(4, out_dim)
@@ -98,11 +99,39 @@ class Policy(nn.Module):
 			mu = nn.Tanh()(self.theta(x))
 			#sigma = torch.exp(self.log_std(phi))
 			sigma = self.log_std.exp().expand_as(mu)
-
 			return mu, sigma
 
-	def get_phi(self, x):
-		return self.relu(self.lin1(x))
+
+	def sample_action(self, x):
+		action_probs = self.forward(x)
+
+		if not self.continuous:
+			c = Categorical(action_probs[0])
+			a = c.sample() 
+			a = convert_one_hot(a.double(), n_actions).unsqueeze(2)
+			pdb.set_trace()
+			#the dim of this could be wrong due to change to batch_size. NOT TESTED
+		else:
+			c = Normal(*action_probs)
+			a = torch.clamp(c.rsample(), min=-self.max_torque, max=self.max_torque)
+
+		return a
+
+
+
+	# def get_fisher(self, x_prime, num_samples):
+	# 	action_probs = self.forward(x_prime)
+
+	# 	with torch.no_grad():
+	# 		c = Normal(*actions_probs)
+	# 		actions_tensor = torch.zeros((num_samples, x_prime.shape[0], self.n_actions))
+
+	# 		for s in range(num_samples):
+	# 			actions_tensor[i] = torch.clip(c.rsample(), min=-MAX_TORQUE, max=MAX_TORQUE)
+
+	# 	log_probs = get_selected_log_probabilities(self, x_prime, actions_tensor)
+	# 	grad(log_probs)
+	# 	return
 
 
 class DirectEnvModel(torch.nn.Module):
@@ -156,11 +185,19 @@ class DirectEnvModel(torch.nn.Module):
 		max_actions = state_action.shape[1]
 		actions_dim = state_action[0,0,:].shape[0] - states_dim
 
-		x_list = [state_action[:,:,:states_dim]]
-		a_list = [state_action[:,:,states_dim:]]
-		r_list = [get_reward_fn('lin_dyn', x_list[0], a_list[0])]
+		x_t_1 = self.forward(state_action)
 
-		for s in range(steps_to_unroll):
+		x_list = [state_action[:,:,:states_dim], x_t_1]
+
+		with torch.no_grad():
+			a0 = policy.sample_action(x_list[0])
+
+		a_list = [a0]
+		r_list = [get_reward_fn('lin_dyn',x_t_1, a0)]
+
+		state_action = torch.cat((x_t_1, a0),dim=2)
+
+		for s in range(steps_to_unroll - 1):
 			if torch.isnan(torch.sum(state_action)):
 					print('found nan in state')
 					print(state_action)
@@ -169,42 +206,33 @@ class DirectEnvModel(torch.nn.Module):
 			x_next = self.forward(state_action)
 
 			#action_taken = state_action[:,:,states_dim:]
-
 			with torch.no_grad():
-				action_probs = policy(torch.DoubleTensor(x_next))
-
-				if not continuous_actionspace:
-					c = Categorical(action_probs[0])
-					a = c.sample() 
-					pdb.set_trace()
-					#the dim of this could be wrong due to change to batch_size. NOT TESTED
-					next_state_action = torch.cat((x_next, convert_one_hot(a.double(), n_actions).unsqueeze(2)),dim=2)
-				else:
-					c = Normal(*action_probs)
-					a = torch.clamp(c.rsample(), min=-self.max_torque, max=self.max_torque)
+				a = policy.sample_action(x_next)
 
 			r = get_reward_fn('lin_dyn', x_next, a) #this is where improvement happens when R_range = 1
 			#r = get_reward_fn('lin_dyn', state_action[:,:,:states_dim], a)
 			next_state_action = torch.cat((x_next, a),dim=2)
+			
+			############# for discrete, needs testing #######################
+			#the dim of this could be wrong due to change to batch_size. NOT TESTED
+			#next_state_action = torch.cat((x_next, convert_one_hot(a.double(), n_actions).unsqueeze(2)),dim=2)
+			#################################################################
 
-			#since we're unrolling the last s states past the termination, we have to set the rewards for those predicted states to 0 because we have no data to learn from those
-			# if s > 0:
-			# 	r[:,-s:] = 0 
 			a_list.append(a)
 			r_list.append(r)
 			x_list.append(x_next)
 			state_action = next_state_action
 		#x_list = torch.stack(x_list)
 		x_list = torch.cat(x_list, 2).view(batch_size, -1, steps_to_unroll+1, states_dim)
-		a_list = torch.cat(a_list, 2).view(batch_size, -1, steps_to_unroll+1, actions_dim)
-		r_list = torch.cat(r_list, 1).view(batch_size, -1, steps_to_unroll+1, 1)
+		a_list = torch.cat(a_list, 2).view(batch_size, -1, steps_to_unroll, actions_dim)
+		r_list = torch.cat(r_list, 1).view(batch_size, -1, steps_to_unroll, 1)
 
+		#NOT true: there is no gradient for P_hat from here, with R_range = 1, the first state is from true dynamics so doesn't have grad
 		x_curr = x_list[:,:,:-1,:]
 		x_next = x_list[:,:,1:,:]
 		#print(x_next.contiguous().view(-1,2))
-		a_used = a_list[:,:,:-1,:]
-		r_used = r_list[:,:,:-1,:]
-
+		a_used = a_list[:,:,:,:]
+		r_used = r_list[:,:,:,:]
 		return x_curr, x_next, a_used, r_used
 
 		# #only need rewards from model for the steps we've unrolled, the rest is assumed to be equal to the environment's
@@ -214,31 +242,27 @@ class DirectEnvModel(torch.nn.Module):
 
 	def mle_validation_loss(self, states_next, state_actions, policy, R_range):
 		with torch.no_grad():
-			squared_errors = 0
-			step_state = state_actions
 			continuous_actionspace = policy.continuous
+			squared_errors = torch.zeros_like(states_next)
+			step_state = state_actions.to(device)
 
 			for step in range(R_range):
 				next_step_state = self.forward(step_state)
 
-				if step > 0:
-					squared_errors += torch.sum((states_next[:,step:] - next_step_state[:,:-step,:])**2)
-				else:
-					squared_errors += torch.sum((states_next - next_step_state)**2)
+				squared_errors += F.pad(input=(states_next[:,step:,:] - next_step_state)**2, pad=(0,0,step,0,0,0), mode='constant', value=0)
+
+				#rolled_out_states_sums += shift_down(next_step_state,step, max_actions)
+
+				shortened = next_step_state[:,:-1,:]
+				if shortened.nelement() > 0:
+					a = policy.sample_action(torch.DoubleTensor(shortened))	
+					step_state = torch.cat((shortened,a),dim=2)
+
+			#state_loss = torch.mean(squared_errors)#torch.mean((states_next - rolled_out_states_sums)**2)
+			model_loss = torch.mean(squared_errors) #+ reward_loss)# + done_loss)
+			#print("R_range: {}, negloglik  = {:.7f}".format(R_range, model_loss.data.cpu()))
 			
-				action_probs = policy(torch.DoubleTensor(next_step_state))
-				
-				if not continuous_actionspace:
-					#needs a look 
-					c = Categorical(action_probs)
-					a = c.sample() 
-					step_state = torch.cat((shortened,convert_one_hot(a, actions_dim)),dim=2)
-				else:
-					c = Normal(*action_probs)
-					a = torch.clamp(c.rsample(), min=-self.max_torque, max=self.max_torque)
-					step_state = torch.cat((next_step_state,a),dim=2)
-			
-		return squared_errors
+		return squared_errors.mean()
 	
 	def train_mle(self, pe, state_actions, states_next, epochs, max_actions, R_range, opt, env_name, continuous_actionspace, losses):
 		best_loss = 20
@@ -256,16 +280,8 @@ class DirectEnvModel(torch.nn.Module):
 				#rolled_out_states_sums += shift_down(next_step_state,step, max_actions)
 
 				shortened = next_step_state[:,:-1,:]
-				action_probs = pe(torch.DoubleTensor(shortened))
-				
-				if not continuous_actionspace:
-					c = Categorical(action_probs)
-					a = c.sample() 
-					step_state = torch.cat((shortened,convert_one_hot(a, self.n_actions)),dim=2)
-				else:
-					c = Normal(*action_probs)
-					a = torch.clamp(c.rsample(), min=-self.max_torque, max=self.max_torque)
-					step_state = torch.cat((shortened,a),dim=2)
+				a = pe.sample_action(torch.DoubleTensor(shortened))	
+				step_state = torch.cat((shortened,a),dim=2)
 
 			#state_loss = torch.mean(squared_errors)#torch.mean((states_next - rolled_out_states_sums)**2)
 

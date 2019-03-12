@@ -22,7 +22,7 @@ import dm_control2gym
 
 path = '/home/romina/CS294hw/for_viz/'
 #device = 'cuda' if torch.cuda.is_available() else 'cpu'
-device = 'cpu'
+device = 'cpu' # .... much slower with cuda ....
 loss_name = 'paml'
 
 
@@ -30,14 +30,20 @@ MAX_TORQUE = 1.
 
 if __name__ == "__main__":
 	#initialize pe 
-	num_episodes = 100
-	max_actions = 10
+	num_episodes = 1000
+	max_actions = 20
+	#can't have max_actions = 1... works now
 	num_states = max_actions + 1
-	num_iters = 63
-	opt_step_def = 50
+	num_iters = 1003
+	opt_step_def = 1
+
 	discount = 0.9
-	R_range = 1
-	batch_size = 100
+	R_range = 2
+
+	batch_size = 1000
+	
+	# true_log_probs_grad_file = open('true_log_probs_grad.txt', 'w')
+	# model_log_probs_grad_file = open('model_log_probs_grad.txt', 'w')
 
 	true_pe_grads_file = open('true_pe_grads.txt', 'w')
 	model_pe_grads_file = open('model_pe_grads.txt', 'w') 
@@ -67,7 +73,7 @@ if __name__ == "__main__":
 	#env_name = env.spec.id
 
 	##########for linear system setup#############
-	dataset = ReplayMemory(20000)
+	dataset = ReplayMemory(50000)
 	x_d = np.zeros((0,2))
 	x_next_d = np.zeros((0,2))
 	r_d = np.zeros((0))
@@ -95,22 +101,25 @@ if __name__ == "__main__":
 	for p in P_hat.parameters():
 		p.requires_grad = True
 
-	opt = optim.SGD(P_hat.parameters(), lr=1e-5, momentum=0.99)
-	lr_schedule = torch.optim.lr_scheduler.MultiStepLR(opt, milestones=[900,1000,1500], gamma=0.1)
+	#opt = optim.SGD(P_hat.parameters(), lr=1e-5, momentum=0.90, nesterov=True)
+	opt = optim.Adam(P_hat.parameters(), lr=1e-4, weight_decay=1e-5) #increase wd?
+	
+	lr_schedule = torch.optim.lr_scheduler.MultiStepLR(opt, milestones=[1000,2000,3000], gamma=0.1)
 	#1. Gather data, 2. train model with mle 3. reinforce 4. run policy, add new data to data
 
 	#1. Gather data
 	losses = []
 	grads = []
 	pe_params = []
+	r_norms = []
 	best_loss = 20
 
 	unroll_num = num_states - R_range # T_i - j
 
+	
+	x_0 = 2*np.random.random(size=(2,)) - 0.5
 	for ep in range(num_episodes):
-		x_0 = 2*np.random.random(size=(2,)) - 0.5
 		x_tmp, x_next_tmp, u_list, _, r_list = lin_dyn(max_actions, pe, [], x=x_0, discount=0.0)
-		print(x_tmp)
 		for x, x_next, u, r in zip(x_tmp, x_next_tmp, u_list, r_list):
 			dataset.push(x, x_next, u, r)
 
@@ -119,29 +128,40 @@ if __name__ == "__main__":
 
 		#dataset.memory[ep:ep + max_actions]
 	for i in range(num_iters):
+		#assuming samples are disjoint
 		batch = dataset.sample(batch_size, structured=True, max_actions=max_actions, num_episodes=num_episodes)
 
-		states_prev = torch.zeros((batch_size, max_actions, states_dim)).double()
-		states_next = torch.zeros((batch_size, max_actions, states_dim)).double()
-		rewards = torch.zeros((batch_size, max_actions)).double()
-		actions_tensor = torch.zeros((batch_size, max_actions, actions_dim)).double()
-		discounted_rewards_tensor = torch.zeros((batch_size, max_actions, 1)).double()
+		states_prev = torch.zeros((batch_size, max_actions, states_dim)).double().to(device)
+		states_next = torch.zeros((batch_size, max_actions, states_dim)).double().to(device)
+		rewards = torch.zeros((batch_size, max_actions)).double().to(device)
+		actions_tensor = torch.zeros((batch_size, max_actions, actions_dim)).double().to(device)
+		discounted_rewards_tensor = torch.zeros((batch_size, max_actions, 1)).double().to(device)
 
 		for b in range(batch_size):
 			#batch = dataset.sample(max_actions, structured=True, num_episodes=num_episodes)
-			states_prev[b] = torch.tensor([samp.state for samp in batch[b]]).double()
-			states_next[b] = torch.tensor([samp.next_state for samp in batch[b]]).double()
-			rewards[b] = torch.tensor([samp.reward for samp in batch[b]]).double()
-			actions_tensor[b] = torch.tensor([samp.action for samp in batch[b]]).double()
+			states_prev[b] = torch.tensor([samp.state for samp in batch[b]]).double().to(device)
+			states_next[b] = torch.tensor([samp.next_state for samp in batch[b]]).double().to(device)
+			rewards[b] = torch.tensor([samp.reward for samp in batch[b]]).double().to(device)
+			actions_tensor[b] = torch.tensor([samp.action for samp in batch[b]]).double().to(device)
 			discounted_rewards_tensor[b] = discount_rewards(rewards[b].unsqueeze(1), discount, center=False).to(device)
 		state_actions = torch.cat((states_prev,actions_tensor), dim=2)
 		#pamlize the real trajectory (states_next)
+
 		pe.zero_grad()
 		true_log_probs_t = get_selected_log_probabilities(pe, states_prev.view(-1,states_dim), actions_tensor.view(-1,actions_dim)).view(batch_size,max_actions,actions_dim)
+
+		#true_log_probs_grad = grad(true_log_probs_t.mean(), pe.parameters(), create_graph=True, retain_graph=True)
+
+		#print((i,true_log_probs_grad), file=true_log_probs_grad_file)
+
 		#1
 		true_term = torch.zeros((batch_size,unroll_num, actions_dim))
+		alt_true_term = torch.zeros((batch_size, unroll_num, R_range, actions_dim))
+
+		r1 = torch.zeros((unroll_num,batch_size, R_range, 1))
 		for ell in range(unroll_num):
 			for_true_discounted_rewards = discounted_rewards_tensor[:,ell:R_range + ell]
+			#r1[ell] = for_true_discounted_rewards
 			#true_term = torch.sum(true_log_probs_t[:R_range + 1] * ((for_true_discounted_rewards - for_true_discounted_rewards.mean())/(for_true_discounted_rewards.std() + 1e-5)))
 			#don't sum yet
 
@@ -149,12 +169,16 @@ if __name__ == "__main__":
 
 			if for_true_discounted_rewards.shape[1] > 1:
 				#not tested for R_range > 1
+				#alt_true_term[:,ell] = true_log_probs_t[:,ell:R_range + ell]
+				
 				true_term[:,ell] = torch.einsum('ijk,ijl->ik',[true_log_probs_t[:,ell:R_range + ell], ((for_true_discounted_rewards - for_true_discounted_rewards.mean(dim=1).unsqueeze(1))/(for_true_discounted_rewards.std(dim=1).unsqueeze(1) + 1e-5))])
+
 				#true_term[:,ell] = torch.einsum('ijk,ijl->ik',[true_log_probs_t[:,ell:R_range + ell], true_log_probs_t[:,ell:R_range + ell]])
 
 			else:
-				true_term[:,ell] = torch.einsum('ijk,ijl->ik', [true_log_probs_t[:,ell:R_range + ell], for_true_discounted_rewards])
 				#true_term[:,ell] = torch.einsum('ijk,ijl->ik', [true_log_probs_t[:,ell:R_range + ell], true_log_probs_t[:,ell:R_range + ell]])
+				true_term[:,ell] = torch.einsum('ijk,ijl->ik',[true_log_probs_t[:,ell:R_range + ell], for_true_discounted_rewards]) 
+
 
 		#true_term = torch.sum(true_log_probs_t[:, :R_range + 1])
 		##########################################
@@ -176,7 +200,7 @@ if __name__ == "__main__":
 		for ell in range(unroll_num):
 			#length of row: max_actions - ell
 			#rewards_ell = np.hstack((np.zeros((R_range + ell + 1)), rewards_np[ell + R_range + 1:]))
-			rewards_ell = torch.DoubleTensor(np.hstack((np.zeros((batch_size, R_range + ell)), rewards_np[:,ell + R_range:]))).unsqueeze(2)
+			rewards_ell = torch.DoubleTensor(np.hstack((np.zeros((batch_size, R_range + ell)), rewards_np[:,ell + R_range:]))).unsqueeze(2).to(device)
 
 			discounted_rewards_after_skip = discount_rewards(rewards_ell, discount, center=False, batch_wise=True)[:,ell:ell+R_range]
 			
@@ -195,10 +219,14 @@ if __name__ == "__main__":
 
 			# k_step_log_probs = torch.zeros((unroll_num, R_range + 1, 2))
 			model_term = torch.zeros(batch_size, unroll_num, actions_dim)
+			alt_model_term = torch.zeros(batch_size, unroll_num, R_range, actions_dim)
+
 			step_state = state_actions.to(device)
 
 			#all max_actions states get unrolled R_range steps
 			model_x_curr, model_x_next, model_a_list, model_r_list = P_hat.unroll(step_state[:,:unroll_num,:], pe, states_dim, steps_to_unroll=R_range, continuous_actionspace=continuous_actionspace)
+
+			#r_norms.append(torch.norm(model_r_list.detach().data - rewards).numpy())			
 			# pdb.set_trace()
 			# plt.figure()
 			# plt.plot(model_x_curr[0,:,0,0].detach().numpy(), model_x_curr[0,:,0,1].detach().numpy())
@@ -206,23 +234,36 @@ if __name__ == "__main__":
 			# plt.show()
 
 			first_returns = discount_rewards(model_r_list.squeeze(3), discount, center=False, batch_wise=True)#.squeeze(3)#transpose(-1,0)#.view(-1,1)
-			second_returns = true_rewards_after_R.double()#discounted_rewards_tensor[R_range + ell + 1 + 1]
+
+			second_returns = true_rewards_after_R.double().to(device)#discounted_rewards_tensor[R_range + ell + 1 + 1]
+			#r2 = torch.zeros((unroll_num,batch_size, R_range, 1))
+
 			for ell in range(unroll_num):
 				total_model_returns = first_returns[:,ell] + second_returns[:,ell]#:R_range+ell].sum(dim=0) + second_returns[ell]
+				#r2[ell] = total_model_returns.unsqueeze(2)
 				model_log_probs = get_selected_log_probabilities(pe, model_x_curr[:, ell, :,:].contiguous().view(-1,states_dim), model_a_list[:,ell,:,:].contiguous().view(-1,actions_dim)).view(batch_size, -1, actions_dim)
+
+				#model_log_probs_grad = grad(model_log_probs.mean(), pe.parameters(), create_graph=True, retain_graph=True)
+
+				#print((i,model_log_probs_grad), file=model_log_probs_grad_file)
 				#the shape of model_log_probs is weird due to reason above, not sure if this multiplication would give correct results
 				#might need einsum for the below multiplications
 				#print((i, ell, total_model_returns), file=model_returns_file)
 
 				if total_model_returns.shape[1] > 1:
+					#alt_model_term[:,ell] = model_log_probs
+
 					model_term[:,ell] = torch.einsum('ijk,ijl->ik', [model_log_probs, ((total_model_returns - total_model_returns.mean(dim=1).unsqueeze(1))/(total_model_returns.std(dim=1).unsqueeze(1) + 1e-5)).unsqueeze(2)])
+					
 					#model_term[:,ell] = torch.einsum('ijk,ijl->ik', [model_log_probs, model_log_probs])
 				else:
-					model_term[:,ell] = torch.einsum('ijk,ijl->ik', [model_log_probs, total_model_returns.unsqueeze(2)])
-					# model_term[:,ell] = torch.einsum('ijk,ijl->ik', [model_log_probs, model_log_probs])
-			#take mean over all batches ok?
+					#model_term[:,ell] = torch.einsum('ijk,ijl->ik', [model_log_probs, total_model_returns.unsqueeze(2)])
+					model_term[:,ell] = torch.einsum('ijk,ijl->ik',[model_log_probs, total_model_returns.unsqueeze(2)])
+					#model_term[:,ell] = torch.einsum('ijk,ijl->ik', [model_log_probs, model_log_probs])
+
 			model_pe_grads = grad(model_term.mean(), pe.parameters(), create_graph=True)
 
+			#pdb.set_trace()
 			print((i,model_pe_grads), file=model_pe_grads_file)
 			loss = 0 
 			cos = nn.CosineSimilarity(dim=0, eps=1e-6)
@@ -236,21 +277,28 @@ if __name__ == "__main__":
 				# 	loss = loss + torch.sum(torch.norm(x.dot(y)))
 				#loss = loss - torch.sum(cos(x,y))
 				loss = loss + torch.norm(x-y)
-
-			#loss = loss / batch_size
-
+			#r_norms.append(loss.detach().cpu())
+			#loss = torch.norm(r2 - r1)
 			if loss < best_loss:
 				torch.save(P_hat.state_dict(), env_name + '_' + loss_name + '_trained_model.pth')
 				best_loss = loss.detach()  
 
 			loss.backward()
 
-			if i == (num_iters-3) / 3:
-				R_range = 2
+			###############  FOR CURRICULUM LEARNING   #############
+			# if i > 1:
+			# 	if loss.data.cpu() <= initial_loss * 0.1 and R_range < max_actions:
+			# 		R_range += 1
+			# 		lr_schedule.step()
+			# 		print("******** Horizon: {} ************".format(R_range))
+			# else:
+			# 	initial_loss = loss.data.cpu()
+			########################################################
+
 
 			if i < num_iters-1:
 				nn.utils.clip_grad_value_(P_hat.parameters(), 4.0)
-				grads.append(torch.sum(P_hat.fc1.weight.grad))
+				#grads.append(torch.sum(P_hat.fc1.weight.grad))
 				if torch.norm(P_hat.fc1.weight.grad) == 0:
 					pdb.set_trace()
 				opt.step()
@@ -258,6 +306,7 @@ if __name__ == "__main__":
 			if torch.isnan(torch.sum(P_hat.fc1.weight.data)):
 				print('weight turned to nan, check gradients')
 				pdb.set_trace()
+
 			losses.append(loss.data.cpu())
 			lr_schedule.step()
 
@@ -276,7 +325,7 @@ if __name__ == "__main__":
 
 			if i == num_iters-2:
 				#P_hat.load_state_dict(torch.load('lin_dyn_paml_trained_model.pth', map_location=device))
-				P_hat.load_state_dict(torch.load('lin_dyn_2_mle_trained_model.pth', map_location=device))
+				P_hat.load_state_dict(torch.load('lin_dyn_mle_hor_2_traj_20_batch_1000_sameStartState.pth', map_location=device))
 				batch_size = num_episodes
 		
 
@@ -293,6 +342,7 @@ if __name__ == "__main__":
 # np.save(os.path.join(path, (errors_name+'_val')), np.asarray(all_val_errs))
 print(best_loss)
 print(os.path.join(path,loss_name))
-np.save(os.path.join(path,'grads'),np.asarray(grads))
+# np.save(os.path.join(path,'grads'),np.asarray(grads))
+np.save(os.path.join(path,'paml_rewards_norm'),np.asarray(r_norms))
 np.save(os.path.join(path,loss_name),np.asarray(losses))
 # np.save(os.path.join(path,loss_name +'_pe_params'),np.asarray(pe_params))

@@ -254,24 +254,27 @@ def get_selected_log_probabilities(policy_estimator, states_tensor, actions_tens
 
 
 #################### IGNORE BELOW ##############################
-def mle_multistep_loss(P_hat, policy, val_states_next_tensor, state_actions_val, n_actions, max_actions, continuous_actionspace=False, device='cpu'):
+
+##doesn't work so well now, next_step_state_val[:,:-4] this part is probably wrong
+def mle_multistep_loss(P_hat, policy, val_states_next_tensor, state_actions_val, n_actions, max_actions, R_range, continuous_actionspace=False, device='cpu'):
 
 	squared_errors_val = torch.zeros_like(val_states_next_tensor)
 
-	step_state_val = state_actions_val.to(device)[:,:18]
+	horizon = R_range - 1
+	step_state_val = state_actions_val.to(device)[:,:-horizon]
 
 	with torch.no_grad():
 		for step in range(max_actions*2-1):
 			next_step_state_val = P_hat(step_state_val)
 
 			if step==0:
-				err1_step = torch.mean((val_states_next_tensor[:,:18] - next_step_state_val)**2)
+				err1_step = torch.mean((val_states_next_tensor[:,:-horizon] - next_step_state_val)**2)
 			elif step == 5:
-				err5_step = torch.mean((val_states_next_tensor[:,5:23] - next_step_state_val)**2)
+				err5_step = torch.mean((val_states_next_tensor[:,5:5+max_actions*2-horizon] - next_step_state_val[:,:-4])**2)
 			elif step == 10:
-				err10_step = torch.mean((val_states_next_tensor[:,10:28] - next_step_state_val)**2)
+				err10_step = torch.mean((val_states_next_tensor[:,10:10+max_actions*2-horizon] - next_step_state_val[:,:-9])**2)
 			elif step == 18:
-				err20_step = torch.mean((val_states_next_tensor[:,18:36] - next_step_state_val)**2)
+				err20_step = torch.mean((val_states_next_tensor[:,18:18+max_actions*2-horizon] - next_step_state_val[:,:-17])**2)
 
 			#squared_errors_val += F.pad(input=(val_states_next_tensor[:,step:,:] - next_step_state_val)**2, pad=(0,0,step,0,0,0), mode='constant', value=0)
 			shortened_val = next_step_state_val

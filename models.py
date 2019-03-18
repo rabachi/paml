@@ -19,121 +19,6 @@ from torchviz import make_dot
 
 device='cpu'
 
-def init_weights(m):
-	if isinstance(m, nn.Linear):
-		nn.init.normal_(m.weight, mean=0., std=0.1)
-		nn.init.constant_(m.bias, 0.1)
-		
-
-Transition = namedtuple('Transition',('state', 'next_state', 'action', 'reward'))
-
-# Using PyTorch's Tutorial
-class ReplayMemory(object):
-
-	def __init__(self, size):
-		self.size = size
-		self.memory = []
-		self.position = 0
-
-	def push(self, *args):
-		"""Saves a transition."""
-		
-		if len(self.memory) < self.size:
-			self.memory.append(None)
-
-		self.memory[self.position] = Transition(*args)
-		self.position = (self.position + 1) % self.size
-
-	def clear(self):
-		self.memory = []
-		self.position = 0
-
-	def sample(self, batch_size, structured=False, max_actions=10, num_episodes=10):
-		if structured:
-			#batch_size = number of episodes to return
-			#max_actions = constant that is the length of the episode
-			batch = np.empty(batch_size, object)
-			ep = np.random.choice(range(num_episodes), batch_size, replace=False)
-			start_id = ep*max_actions
-			for b in range(batch_size):
-				batch[b] = self.memory[start_id[b]:start_id[b]+max_actions]
-			return batch
-
-		else:
-			return random.sample(self.memory, batch_size)
-
-	def __len__(self):
-		return len(self.memory)
-
-
-
-class Policy(nn.Module):
-	def __init__(self, in_dim, out_dim, continuous=False, std=-0.8, max_torque=1. ):#-0.8 GOOD
-		super(Policy, self).__init__()
-		self.n_actions = out_dim
-		self.continuous = continuous
-		self.max_torque = max_torque
-		#self.lin1 = nn.Linear(in_dim, 4)
-		#self.relu = nn.ReLU()
-		#self.theta = nn.Linear(4, out_dim)
-		self.theta = nn.Linear(in_dim, out_dim)
-
-		#torch.nn.init.xavier_uniform_(self.lin1.weight)
-		torch.nn.init.xavier_uniform_(self.theta.weight)
-
-		if continuous:
-			#self.log_std = nn.Linear(16, out_dim)
-			self.log_std = nn.Parameter(torch.ones(out_dim) * std, requires_grad=True)
-			#self.log_std = (torch.ones(out_dim) * std).type(torch.DoubleTensor)
-
-	def forward(self, x):
-		#phi = self.relu(self.lin1(x))
-
-		if not self.continuous:
-			y = self.theta(phi)
-			out = nn.Softmax(dim=-1)(y)
-			out = torch.clamp(out, min=-1e-4, max=100)
-			return out, 0
-
-		else:
-			mu = nn.Tanh()(self.theta(x))
-			#sigma = torch.exp(self.log_std(phi))
-			sigma = self.log_std.exp().expand_as(mu)
-			return mu, sigma
-
-
-	def sample_action(self, x):
-		action_probs = self.forward(x)
-
-		if not self.continuous:
-			c = Categorical(action_probs[0])
-			a = c.sample() 
-			a = convert_one_hot(a.double(), n_actions).unsqueeze(2)
-			pdb.set_trace()
-			#the dim of this could be wrong due to change to batch_size. NOT TESTED
-		else:
-			c = Normal(*action_probs)
-			a = torch.clamp(c.rsample(), min=-self.max_torque, max=self.max_torque)
-
-		return a
-
-
-
-	# def get_fisher(self, x_prime, num_samples):
-	# 	action_probs = self.forward(x_prime)
-
-	# 	with torch.no_grad():
-	# 		c = Normal(*actions_probs)
-	# 		actions_tensor = torch.zeros((num_samples, x_prime.shape[0], self.n_actions))
-
-	# 		for s in range(num_samples):
-	# 			actions_tensor[i] = torch.clip(c.rsample(), min=-MAX_TORQUE, max=MAX_TORQUE)
-
-	# 	log_probs = get_selected_log_probabilities(self, x_prime, actions_tensor)
-	# 	grad(log_probs)
-	# 	return
-
-
 class DirectEnvModel(torch.nn.Module):
 	def __init__(self, states_dim, N_ACTIONS, MAX_TORQUE):
 		super(DirectEnvModel, self).__init__()
@@ -240,13 +125,214 @@ class DirectEnvModel(torch.nn.Module):
 		# model_log_probs = get_selected_log_probabilities(policy, shortened, a)
 		#don't need states, just the log probabilities 
 
+	def paml(self, 
+			pe, 
+			train,
+			env_name, 
+			dataset,
+			device,
+			num_starting_states,
+			num_episodes,
+			batch_size, 
+			max_actions, 
+			states_dim, 
+			actions_dim,
+			num_states,
+			R_range,
+			discount,
+			true_pe_grads_file, 
+			model_pe_grads_file,
+			losses,
+			opt,
+			opt_steps,
+			num_iters,
+			lr_schedule
+		):
+
+		unroll_num = num_states - R_range
+
+		best_loss = 20
+		val_loss = 0
+		continuous_actionspace = pe.continuous
+
+		num_iters = num_iters if train else num_starting_states
+		opt_steps = opt_steps if train else 1
+		# dataset = ReplayMemory(500000)
+		# x_0 = 2*np.random.random(size=(2,)) - 0.5
+
+		# for ep in range(num_episodes):
+		# 		x_tmp, x_next_tmp, u_list, _, r_list = lin_dyn(max_actions, pe, [], x=x_0, discount=0.0)
+		# 		for x, x_next, u, r in zip(x_tmp, x_next_tmp, u_list, r_list):
+		# 			dataset.push(x, x_next, u, r)
+
+		for i in range(num_iters):
+			start_at = None if train else i
+			#assuming samples are disjoint
+			batch = dataset.sample(batch_size, structured=True, max_actions=max_actions, num_episodes=num_episodes, num_starting_states=num_starting_states, start_at=start_at)
+			states_prev = torch.zeros((batch_size, max_actions, states_dim)).double().to(device)
+			states_next = torch.zeros((batch_size, max_actions, states_dim)).double().to(device)
+			rewards = torch.zeros((batch_size, max_actions)).double().to(device)
+			actions_tensor = torch.zeros((batch_size, max_actions, actions_dim)).double().to(device)
+			discounted_rewards_tensor = torch.zeros((batch_size, max_actions, 1)).double().to(device)
+
+			for b in range(batch_size):
+				try:
+					states_prev[b] = torch.tensor([samp.state for samp in batch[b]]).double().to(device)
+				except:
+					pdb.set_trace()
+				states_next[b] = torch.tensor([samp.next_state for samp in batch[b]]).double().to(device)
+				rewards[b] = torch.tensor([samp.reward for samp in batch[b]]).double().to(device)
+				actions_tensor[b] = torch.tensor([samp.action for samp in batch[b]]).double().to(device)
+				discounted_rewards_tensor[b] = discount_rewards(rewards[b].unsqueeze(1), discount, center=False).to(device)
+			state_actions = torch.cat((states_prev,actions_tensor), dim=2)
+
+			pe.zero_grad()
+			true_log_probs_t = get_selected_log_probabilities(pe, states_prev.view(-1,states_dim), actions_tensor.view(-1,actions_dim)).view(batch_size,max_actions,actions_dim)
+
+			true_term = torch.zeros((batch_size,unroll_num, actions_dim))
+			#alt_true_term = torch.zeros((batch_size, unroll_num, R_range, actions_dim))
+			#r1 = torch.zeros((unroll_num,batch_size, R_range, 1))
+			for ell in range(unroll_num):
+				for_true_discounted_rewards = discounted_rewards_tensor[:,ell:R_range + ell]
+				#r1[ell] = for_true_discounted_rewards
+				if for_true_discounted_rewards.shape[1] > 1:
+					#not tested for R_range > 1
+					#alt_true_term[:,ell] = true_log_probs_t[:,ell:R_range + ell]
+					true_term[:,ell] = torch.einsum('ijk,ijl->ik',[true_log_probs_t[:,ell:R_range + ell], ((for_true_discounted_rewards - for_true_discounted_rewards.mean(dim=1).unsqueeze(1))/(for_true_discounted_rewards.std(dim=1).unsqueeze(1) + 1e-5))])
+				else:
+					true_term[:,ell] = torch.einsum('ijk,ijl->ik',[true_log_probs_t[:,ell:R_range + ell], for_true_discounted_rewards]) 
+
+			##########################################
+			true_pe_grads_attached = grad(true_term.mean(), pe.parameters(), create_graph=True)
+			true_pe_grads = [true_pe_grads_attached[t].detach() for t in range(0,len(true_pe_grads_attached))]
+
+			print((i,true_pe_grads), file=true_pe_grads_file)
+			##########################################
+
+			rewards_np = np.asarray(rewards)
+
+			true_rewards_after_R = torch.zeros((batch_size, unroll_num, R_range))
+			for ell in range(unroll_num):
+				#length of row: max_actions - ell
+				rewards_ell = torch.DoubleTensor(np.hstack((np.zeros((batch_size, R_range + ell)), rewards_np[:,ell + R_range:]))).unsqueeze(2).to(device)
+				discounted_rewards_after_skip = discount_rewards(rewards_ell, discount, center=False, batch_wise=True)[:,ell:ell+R_range]
+				try:
+					true_rewards_after_R[:, ell] = discounted_rewards_after_skip.squeeze(2).to(device)
+				except RuntimeError:
+					pdb.set_trace()
+					print('Oops! RuntimeError')
+
+			#opt_steps = opt_step_def if i < num_iters-2 else 1
+			for j in range(opt_steps):
+				if train:
+					opt.zero_grad()
+				pe.zero_grad() 
+				model_term = torch.zeros(batch_size, unroll_num, actions_dim)
+				#alt_model_term = torch.zeros(batch_size, unroll_num, R_range, actions_dim)
+
+				step_state = state_actions.to(device)
+				#all max_actions states get unrolled R_range steps
+				model_x_curr, model_x_next, model_a_list, model_r_list = self.unroll(step_state[:,:unroll_num,:], pe, states_dim, steps_to_unroll=R_range, continuous_actionspace=continuous_actionspace)
+
+				#r_norms.append(torch.norm(model_r_list.detach().data - rewards).numpy())			
+				# pdb.set_trace()
+				# plt.figure()
+				# plt.plot(model_x_curr[0,:,0,0].detach().numpy(), model_x_curr[0,:,0,1].detach().numpy())
+				# plt.plot(model_x_curr[0,:,1,0].detach().numpy(), model_x_curr[0,:,1,1].detach().numpy())
+				# plt.show()
+
+				first_returns = discount_rewards(model_r_list.squeeze(3), discount, center=False, batch_wise=True)
+				second_returns = true_rewards_after_R.double().to(device)#discounted_rewards_tensor[R_range + ell + 1 + 1]
+				#r2 = torch.zeros((unroll_num,batch_size, R_range, 1))
+
+
+				#can I match first_returns to closest second_returns in L2 distance of states?
+
+
+				for ell in range(unroll_num):
+					total_model_returns = first_returns[:,ell] + second_returns[:,ell]
+					#r2[ell] = total_model_returns.unsqueeze(2)
+					model_log_probs = get_selected_log_probabilities(pe, model_x_curr[:, ell, :,:].contiguous().view(-1,states_dim), model_a_list[:,ell,:,:].contiguous().view(-1,actions_dim)).view(batch_size, -1, actions_dim)
+
+					if total_model_returns.shape[1] > 1:
+						#alt_model_term[:,ell] = model_log_probs
+						model_term[:,ell] = torch.einsum('ijk,ijl->ik', [model_log_probs, ((total_model_returns - total_model_returns.mean(dim=1).unsqueeze(1))/(total_model_returns.std(dim=1).unsqueeze(1) + 1e-5)).unsqueeze(2)])
+					else:
+						model_term[:,ell] = torch.einsum('ijk,ijl->ik',[model_log_probs, total_model_returns.unsqueeze(2)])
+
+				model_pe_grads = grad(model_term.mean(), pe.parameters(), create_graph=True)
+
+				print((i,model_pe_grads), file=model_pe_grads_file)
+				loss = 0 
+				cos = nn.CosineSimilarity(dim=0, eps=1e-6)
+				for x,y in zip(true_pe_grads, model_pe_grads):
+					#loss = loss + torch.sum((1-cos(x,y)))
+					loss = loss + torch.norm(x-y)
+				
+				#r_norms.append(loss.detach().cpu())
+				#loss = torch.norm(r2 - r1)
+				if loss.detach().cpu() < best_loss:
+					torch.save(self.state_dict(), env_name + '_paml_trained_model.pth')
+					best_loss = loss.detach()  
+
+				loss.backward()
+
+				nn.utils.clip_grad_value_(self.parameters(), 10.0)
+				#grads.append(torch.sum(P_hat.fc1.weight.grad))
+				if torch.norm(self.fc1.weight.grad) == 0:
+					pdb.set_trace()
+				
+				if train:
+					opt.step()
+
+				if torch.isnan(torch.sum(self.fc1.weight.data)):
+					print('weight turned to nan, check gradients')
+					pdb.set_trace()
+
+				losses.append(loss.data.cpu())
+				lr_schedule.step()
+
+				if train and j < 1 and i < 1:
+					initial_loss = loss.data.cpu()
+					#print(initial_loss)
+				
+				###############  FOR CURRICULUM LEARNING   #############
+				if train and j == opt_steps - 1:
+					if (loss.data.cpu() <= initial_loss * 0.1 or loss.data.cpu() <= 10.0) and R_range < 10:
+						initial_loss = loss.data.cpu() * 10.0
+						R_range += 1
+						# max_actions += 1
+						# num_states = max_actions + 1
+						unroll_num = num_states - R_range
+						lr_schedule.step()
+						print("******** Horizon: {}, Traj: {} ************".format(R_range, num_states))
+						# dataset = ReplayMemory(500000)
+						# for ep in range(num_episodes):
+						# 	x_tmp, x_next_tmp, u_list, _, r_list = lin_dyn(max_actions, pe, [], x=x_0, discount=0.0)
+						# 	for x, x_next, u, r in zip(x_tmp, x_next_tmp, u_list, r_list):
+						# 		dataset.push(x, x_next, u, r)
+				########################################################
+				
+				if train:
+					print("R_range:   {},  batch_num:  {},  ep:   {},  paml_loss:    {:.7f}".format(R_range, i, j, loss.data.cpu()))
+				else:
+					val_loss += loss.data.cpu()
+					#print(val_loss)
+		
+		if not train:
+			print("---------------------------------- Validation loss -----------------------------")
+			print("batch_num: {}, ep: {}, average validation paml_loss = {:.7f}".format(i, j, val_loss.data.cpu()/num_starting_states))
+			print("---------------------------------------------------------------------------------")
+		return best_loss
+
+	#next two methods should be combined
 	def mle_validation_loss(self, states_next, state_actions, policy, R_range):
 		with torch.no_grad():
 			continuous_actionspace = policy.continuous
 			squared_errors = torch.zeros_like(states_next)
 			step_state = state_actions.to(device)
 
-			for step in range(R_range):
+			for step in range(R_range - 1):
 				next_step_state = self.forward(step_state)
 
 				squared_errors += F.pad(input=(states_next[:,step:,:] - next_step_state)**2, pad=(0,0,step,0,0,0), mode='constant', value=0)
@@ -265,14 +351,13 @@ class DirectEnvModel(torch.nn.Module):
 		return squared_errors.mean()
 	
 	def train_mle(self, pe, state_actions, states_next, epochs, max_actions, R_range, opt, env_name, continuous_actionspace, losses):
-		best_loss = 20
 		for i in range(epochs):
 			opt.zero_grad()
 
 			squared_errors = torch.zeros_like(states_next)
 			step_state = state_actions.to(device)
 
-			for step in range(R_range):
+			for step in range(R_range - 1):
 				next_step_state = self.forward(step_state)
 
 				squared_errors += F.pad(input=(states_next[:,step:,:] - next_step_state)**2, pad=(0,0,step,0,0,0), mode='constant', value=0)
@@ -288,192 +373,7 @@ class DirectEnvModel(torch.nn.Module):
 			model_loss = torch.mean(squared_errors) #+ reward_loss)# + done_loss)
 			print("R_range: {}, negloglik  = {:.7f}".format(R_range, model_loss.data.cpu()))
 
-			if model_loss < best_loss:
-				torch.save(self.state_dict(), env_name+'_mle_trained_model.pth')
-				#torch.save(P_hat, 'mle_trained_model.pth')
-				best_loss = model_loss  
-
-				model_loss.backward()
-				opt.step()
-				losses.append(model_loss.data.cpu())
-		return best_loss
-
-
-
-class PCPModel(torch.nn.Module):
-
-	LINK_LENGTH_1 = 1.  # [m]
-	LINK_LENGTH_2 = 1.  # [m]
-	LINK_MASS_1 = 1.  #: [kg] mass of link 1
-	LINK_MASS_2 = 1.  #: [kg] mass of link 2
-	LINK_COM_POS_1 = 0.5  #: [m] position of the center of mass of link 1
-	LINK_COM_POS_2 = 0.5  #: [m] position of the center of mass of link 2
-	LINK_MOI = 1.  #: moments of inertia for both links
-
-	MAX_VEL_1 = 4 * np.pi
-	MAX_VEL_2 = 9 * np.pi
-
-	AVAIL_TORQUE = [-1., 0., +1]
-
-	def __init__(
-		self, 
-		state_dim, 
-		env, 
-		R, 
-		n_neurons=1000,
-		n_layers=9, 
-		activation_fn=nn.SELU(),
-		init_w=1e-4
-		):
-		super(PCPModel, self).__init__()
-		self.state_dim = state_dim
-		self.action_dim = action_dim
-		self.range = R
-		self.input_layer = nn.Linear(state_dim + action_dim*R, n_neurons)
-		self.input_layer.weight.data.uniform_(-init_w, init_w)
-		self.input_layer.bias.data.uniform_(-init_w, init_w)
-
-		self.hidden_layers = nn.ModuleList()
-
-		for layer_i in range(n_layers):
-			fc_layer = nn.Linear(n_neurons, n_neurons)
-
-			fc_layer.weight.data.uniform_(-init_w, init_w)
-			fc_layer.bias.data.uniform_(-init_w, init_w)
-
-			self.hidden_layers.append(fc_layer)
-
-		self.out_layer = nn.Linear(n_neurons, state_dim)
-		self.out_layer.weight.data.uniform_(-init_w, init_w)
-		self.out_layer.bias.data.uniform_(-init_w, init_w)
-
-		self.n_layers = n_layers 
-		self.activation = activation_fn
-
-		self.state = None
-		self.viewer = None
-
-	def reset(self):
-		probs = torch.distributions.Uniform(low=-0.1, high=0.1)
-		self.state = probs.sample(torch.zeros(self.states_dim).size())
-		return self.state
-
-	def forward(self, x):
-		h = self.activation(self.input_layer(x))
-
-		for layer in self.hidden_layers:
-			h = layer(h)
-			h = self.activation(h)
-
-		out = self.out_layer(h)
-		self.state = out
-
-		return out
-
-
-	# def render(self, mode='human'):
-	# 	from gym.envs.classic_control import rendering
-
-	# 	s = self.state.detach().numpy()[0,-1]
-
-	# 	if self.viewer is None:
-	# 		self.viewer = rendering.Viewer(500,500)
-	# 		bound = self.LINK_LENGTH_1 + self.LINK_LENGTH_2 + 0.2  # 2.2 for default
-	# 		self.viewer.set_bounds(-bound,bound,-bound,bound)
-
-	# 	if s is None: return None
-
-	# 	p1 = [-self.LINK_LENGTH_1 *
-	# 			np.cos(s[0]), self.LINK_LENGTH_1 * np.sin(s[0])]
-
-	# 	p2 = [p1[0] - self.LINK_LENGTH_2 * np.cos(s[0] + s[1]),
-	# 		p1[1] + self.LINK_LENGTH_2 * np.sin(s[0] + s[1])]
-
-	# 	xys = np.array([[0,0], p1, p2])[:,::-1]
-	# 	thetas = [s[0]-np.pi/2, s[0]+s[1]-np.pi/2]
-	# 	link_lengths = [self.LINK_LENGTH_1, self.LINK_LENGTH_2]
-
-	# 	self.viewer.draw_line((-2.2, 1), (2.2, 1))
-	# 	for ((x,y),th,llen) in zip(xys, thetas, link_lengths):
-	# 		l,r,t,b = 0, llen, .1, -.1
-	# 		jtransform = rendering.Transform(rotation=th, translation=(x,y))
-	# 		link = self.viewer.draw_polygon([(l,b), (l,t), (r,t), (r,b)])
-	# 		link.add_attr(jtransform)
-	# 		link.set_color(0,.8, .8)
-	# 		circ = self.viewer.draw_circle(.1)
-	# 		circ.set_color(.8, .8, 0)
-	# 		circ.add_attr(jtransform)
-
-	# 	return self.viewer.render(return_rgb_array = mode=='rgb_array')
-
-
-class ACPModel(torch.nn.Module):
-	def __init__(
-		self, 
-		state_dim, 
-		action_dim, 
-		R_range,
-		n_neurons=128,
-		n_layers=3,
-		activation_fn=nn.ReLU(),
-		init_w=1e-4,
-		clip_output=True
-		):
-		super(ACPModel, self).__init__()
-		self.state_dim = state_dim
-		self.action_dim = action_dim
-		self.max_torque = 8.0
-		self.range = R_range
-
-		if action_dim == 2:
-			self.input_layer = nn.Linear(state_dim + 1, n_neurons)
-		else:
-			self.input_layer = nn.Linear(state_dim + action_dim, n_neurons)
-		self.input_layer.weight.data.uniform_(-init_w, init_w)
-		self.input_layer.bias.data.uniform_(-init_w, init_w)
-
-		self.hidden_layers = nn.ModuleList()
-
-		for layer_i in range(n_layers):
-			fc_layer = nn.Linear(n_neurons, n_neurons)
-
-			fc_layer.weight.data.uniform_(-init_w, init_w)
-			fc_layer.bias.data.uniform_(-init_w, init_w)
-
-			self.hidden_layers.append(fc_layer)
-
-		self.out_layer = nn.Linear(n_neurons, state_dim)
-		self.out_layer.weight.data.uniform_(-init_w, init_w)
-		self.out_layer.bias.data.uniform_(-init_w, init_w)
-
-		self.n_layers = n_layers 
-		self.activation = activation_fn
-		self.clip_output = clip_output
-
-	def forward(self, x):
-		h = self.activation(self.input_layer(x))
-
-		for layer in self.hidden_layers:
-			h = layer(h)
-			h = self.activation(h)
-
-		#out = x[:,:,:self.state_dim] + self.out_layer(h)
-		out = self.out_layer(h) 
-		
-		if self.clip_output:
-			output = torch.zeros_like(out)
-			#if len(x.shape) == 3:
-			output[:,:,0:1] = torch.clamp(out[:,:,0:1], min=-1.0, max=1.0)
-			output[:,:,2] = torch.clamp(out[:,:,2], min=-self.max_torque, max=self.max_torque)
-		
-			return output
-
-		return out
-
-	def reset(self):
-		probs = torch.distributions.Uniform(low=-.05, high=0.05, size=(4,))
-		self.state = probs.sample(torch.zeros(self.states_dim).size())
-		return self.state
-
-
-
+			model_loss.backward()
+			opt.step()
+			losses.append(model_loss.data.cpu())
+		return model_loss

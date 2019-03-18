@@ -17,6 +17,7 @@ from torch.autograd import grad
 import pdb
 import os
 from models import *
+from networks import *
 from utils import *
 from rewardfunctions import *
 
@@ -30,11 +31,13 @@ MAX_TORQUE = 1.
 if __name__ == "__main__":
 	#initialize pe 
 	num_episodes = 1000
-	max_actions = 10
-	num_iters = 5000
+	num_starting_states = 10
+	max_actions = 11
+	num_iters = 4000
 	discount = 0.9
-	R_range = 2
+	R_range = 2 #horizon 1 --> R_range >= 2
 	batch_size = 1000
+	val_num_starting_states = 5
 	##########for deepmind setup###################
 	#dm_control2gym.create_render_mode('rs', show=False, return_pixel=True, height=240, width=320, camera_id=-1, overlays=(), depth=False, scene_option=None)
 
@@ -60,8 +63,8 @@ if __name__ == "__main__":
 
 	##########for linear system setup#############
 	dataset = ReplayMemory(200000)
-	validation_dataset = ReplayMemory(20000)
-	validation_num = math.floor(num_episodes/4)
+	validation_dataset = ReplayMemory(200000)
+	validation_num = 1000
 	x_d = np.zeros((0,2))
 	x_next_d = np.zeros((0,2))
 	r_d = np.zeros((0))
@@ -87,7 +90,7 @@ if __name__ == "__main__":
 	pe.double()
 
 	opt = optim.SGD(P_hat.parameters(), lr = 1e-5, momentum=0.99)
-	lr_schedule = torch.optim.lr_scheduler.MultiStepLR(opt, milestones=[1000,1250,1500], gamma=0.1)
+	lr_schedule = torch.optim.lr_scheduler.MultiStepLR(opt, milestones=[2000,3000,4000], gamma=0.1)
 	#1. Gather data, 2. train model with mle 3. reinforce 4. run policy, add new data to data
 
 	#1. Gather data
@@ -97,24 +100,32 @@ if __name__ == "__main__":
 
 	epoch = 0
 	x_plot = np.zeros((num_episodes * 20, 2))
-	for ep in range(num_episodes):
+
+	for st in range(num_starting_states):
+		print(st)
 		x_0 = 2*np.random.random(size = (2,)) - 0.5
-		x_tmp, x_next_tmp, u_list, r_tmp, _ = lin_dyn(max_actions, pe, [], x=x_0)
+		for ep in range(num_episodes):
+			x_tmp, x_next_tmp, u_list, r_tmp, _ = lin_dyn(max_actions, pe, [], x=x_0)
 
-		for x, x_next, u, r in zip(x_tmp, x_next_tmp, u_list, r_tmp):
-			dataset.push(x, x_next, u, r)
+			for x, x_next, u, r in zip(x_tmp, x_next_tmp, u_list, r_tmp):
+				dataset.push(x, x_next, u, r)
 
-		x_plot[ep: ep + 20] = x_tmp
+		#x_plot[ep: ep + 20] = x_tmp
 
 
 	#get validation data
-	x_0 = 2*np.random.random(size = (2,)) - 0.5
-	for ep in range(validation_num):
-		
-		x_tmp, x_next_tmp, u_list, r_tmp, _ = lin_dyn(max_actions*2, pe, [], x=x_0)
+	val_ststates=[]
+	for v in range(val_num_starting_states): 
+		x_0 = 2*np.random.random(size = (2,)) - 0.5
+		val_ststates.append(x_0)
 
-		for x, x_next, u, r in zip(x_tmp, x_next_tmp, u_list, r_tmp):
-			validation_dataset.push(x, x_next, u, r)
+	for x_0 in val_ststates:
+		print(x_0)
+		for ep in range(validation_num):	
+			x_tmp, x_next_tmp, u_list, r_tmp, _ = lin_dyn(max_actions*2, pe, [], x=x_0)
+
+			for x, x_next, u, r in zip(x_tmp, x_next_tmp, u_list, r_tmp):
+				validation_dataset.push(x, x_next, u, r)
 
 		# s = env.reset()
 		# states = [s]
@@ -167,27 +178,33 @@ if __name__ == "__main__":
 		#unindented from here
 
 	#validation data
-	val_data = validation_dataset.sample(validation_num, structured=True, max_actions=max_actions*2, num_episodes=validation_num)
+	first_val_loss = 0
+	for i in range(val_num_starting_states):
+		val_data = validation_dataset.sample(validation_num, structured=True, max_actions=max_actions, num_episodes=validation_num, num_starting_states=val_num_starting_states, start_at=i)
 
-	val_states_prev = torch.zeros((validation_num, max_actions*2, states_dim)).double()
-	val_states_next = torch.zeros((validation_num, max_actions*2, states_dim)).double()
-	val_rewards = torch.zeros((validation_num, max_actions*2)).double()
-	val_actions_tensor = torch.zeros((validation_num, max_actions*2, actions_dim)).double()
-	#discounted_rewards_tensor = torch.zeros((batch_size, max_actions, 1)).double()
+		val_states_prev = torch.zeros((validation_num, max_actions, states_dim)).double()
+		val_states_next = torch.zeros((validation_num, max_actions, states_dim)).double()
+		val_rewards = torch.zeros((validation_num, max_actions)).double()
+		val_actions_tensor = torch.zeros((validation_num, max_actions, actions_dim)).double()
+		#discounted_rewards_tensor = torch.zeros((batch_size, max_actions, 1)).double()
 
-	for v in range(validation_num):
-		#batch = dataset.sample(max_actions, structured=True, num_episodes=num_episodes)
-		val_states_prev[v] = torch.tensor([samp.state for samp in val_data[v]]).double()
-		val_states_next[v] = torch.tensor([samp.next_state for samp in val_data[v]]).double()
-		val_rewards[v] = torch.tensor([samp.reward for samp in val_data[v]]).double()
-		val_actions_tensor[v] = torch.tensor([samp.action for samp in val_data[v]]).double()
-		#discounted_rewards_tensor[b] = discount_rewards(rewards[b].unsqueeze(1), discount, center=False).to(device)
+		for v in range(validation_num):
+			#batch = dataset.sample(max_actions, structured=True, num_episodes=num_episodes)
+			val_states_prev[v] = torch.tensor([samp.state for samp in val_data[v]]).double()
+			val_states_next[v] = torch.tensor([samp.next_state for samp in val_data[v]]).double()
+			val_rewards[v] = torch.tensor([samp.reward for samp in val_data[v]]).double()
+			val_actions_tensor[v] = torch.tensor([samp.action for samp in val_data[v]]).double()
+			#discounted_rewards_tensor[b] = discount_rewards(rewards[b].unsqueeze(1), discount, center=False).to(device)
 
-	val_state_actions = torch.cat((val_states_prev,val_actions_tensor), dim=2)
-	first_val_loss = mle_multistep_loss(P_hat, pe, val_states_next, val_state_actions, actions_dim, max_actions, continuous_actionspace=continuous_actionspace)
+		val_state_actions = torch.cat((val_states_prev,val_actions_tensor), dim=2)
+		first_val_loss += P_hat.mle_validation_loss(val_states_next, val_state_actions, pe, R_range)
+
+	first_val_loss = first_val_loss / val_num_starting_states
+	print(first_val_loss)
+	best_val_loss = first_val_loss
 
 	for i in range(num_iters):
-		batch = dataset.sample(batch_size, structured=True, max_actions=max_actions, num_episodes=num_episodes)
+		batch = dataset.sample(batch_size, structured=True, max_actions=max_actions, num_episodes=num_episodes, num_starting_states=num_starting_states)
 
 		batch_states_prev = torch.zeros((batch_size, max_actions, states_dim)).double()
 		batch_states_next = torch.zeros((batch_size, max_actions, states_dim)).double()
@@ -216,13 +233,42 @@ if __name__ == "__main__":
 		#rolled_out_states_sums = torch.zeros_like(states_next)
 		# squared_errors = 0
 		# step_state = state_actions.to(device)
-
+		print("i: ", i)
 		best = P_hat.train_mle(pe, state_actions, batch_states_next, 1, max_actions, R_range, opt, "lin_dyn", continuous_actionspace, losses)
 
-		# if best < first_val_loss * 0.1 and R_range < max_actions - 1:
-		# 	R_range += 1
+		val_loss = 0
+		for i in range(val_num_starting_states):
+			val_data = validation_dataset.sample(validation_num, structured=True, max_actions=max_actions, num_episodes=validation_num, num_starting_states=val_num_starting_states, start_at=i)
+
+			val_states_prev = torch.zeros((validation_num, max_actions, states_dim)).double()
+			val_states_next = torch.zeros((validation_num, max_actions, states_dim)).double()
+			val_rewards = torch.zeros((validation_num, max_actions)).double()
+			val_actions_tensor = torch.zeros((validation_num, max_actions, actions_dim)).double()
+			#discounted_rewards_tensor = torch.zeros((batch_size, max_actions, 1)).double()
+
+			for v in range(validation_num):
+				#batch = dataset.sample(max_actions, structured=True, num_episodes=num_episodes)
+				val_states_prev[v] = torch.tensor([samp.state for samp in val_data[v]]).double()
+				val_states_next[v] = torch.tensor([samp.next_state for samp in val_data[v]]).double()
+				val_rewards[v] = torch.tensor([samp.reward for samp in val_data[v]]).double()
+				val_actions_tensor[v] = torch.tensor([samp.action for samp in val_data[v]]).double()
+				#discounted_rewards_tensor[b] = discount_rewards(rewards[b].unsqueeze(1), discount, center=False).to(device)
+
+			val_state_actions = torch.cat((val_states_prev,val_actions_tensor), dim=2)
+			val_loss += P_hat.mle_validation_loss(val_states_next, val_state_actions, pe, R_range)
+
+		val_loss = val_loss / val_num_starting_states
+
+		if val_loss < best_val_loss:
+			print('best_val_loss:      ', val_loss.detach().data)
+			torch.save(P_hat.state_dict(), 'lin_dyn_horizon_{}_traj_{}_mle_trained_model.pth'.format(R_range,max_actions+1))
+			#torch.save(P_hat, 'mle_trained_model.pth')
+			best_val_loss = val_loss  
+
+		if best < first_val_loss * 0.05 and R_range < max_actions - 1:
+			R_range += 1
 		
-	mle_multistep_loss(P_hat, pe, val_states_next, val_state_actions, actions_dim, max_actions, continuous_actionspace=continuous_actionspace)
+	#mle_multistep_loss(P_hat, pe, val_states_next, val_state_actions, actions_dim, max_actions, R_range, continuous_actionspace=continuous_actionspace)
 
 		# for step in range(R_range):
 		# 	next_step_state = P_hat(step_state)

@@ -48,22 +48,34 @@ class ReplayMemory(object):
 		self.memory = []
 		self.position = 0
 
-	def sample(self, batch_size, structured=False, max_actions=10, num_episodes=10, num_starting_states=5, start_at=None):
+	def sample(self, batch_size, structured=False, max_actions=10, num_episodes_per_start=10, num_starting_states=5, start_at=None):
 		if structured:
+			#fix this : batch_size and num_episodes_per_start should be evenly divisible .. enforce it 
 			#batch_size = number of episodes to return
 			#max_actions = constant that is the length of the episode
 			batch = np.empty(batch_size, object)
+			num_starts_per_batch = int(batch_size/num_episodes_per_start)
+
 			if start_at:
-				starting_state = start_at
+				starting_state = np.linspace(start_at, start_at + num_starts_per_batch, num=num_starts_per_batch)
 			else:
-				starting_state = np.random.choice(range(num_starting_states),1,replace=False)
+				starting_state = np.random.choice(range(num_starting_states), num_starts_per_batch, replace=False)
+			#starting_state is a list now
+			
+			ep = np.zeros((num_starts_per_batch, num_episodes_per_start))
+			start_id = np.zeros((num_starts_per_batch, num_episodes_per_start))
 
-			ep = np.random.choice(range(num_episodes), batch_size, replace=False)
+			for start in range(num_starts_per_batch):
+				ep[start] = np.random.choice(range(num_episodes_per_start), num_episodes_per_start, replace=False)
+				start_id[start] = ep[start]*max_actions + starting_state[start]*num_episodes_per_start*max_actions
 
-			#ep = range(num_episodes)
-			start_id = ep*max_actions + starting_state*num_episodes*max_actions
+			start_id = start_id.reshape(batch_size).astype(int)
 			for b in range(batch_size):
 				batch[b] = self.memory[start_id[b]:start_id[b]+max_actions]
+				if batch[b] == []:
+					print('empty batch')
+					pdb.set_trace()
+
 			return batch
 
 		else:

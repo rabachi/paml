@@ -69,18 +69,29 @@ class DirectEnvModel(torch.nn.Module):
 		batch_size = state_action.shape[0]
 		max_actions = state_action.shape[1]
 		actions_dim = state_action[0,0,:].shape[0] - states_dim
+		
+		A = torch.from_numpy(
+			np.tile(
+				np.array([[0.9, 0.4], [-0.4, 0.9]]),
+				(state_action[0,:,0].shape[0],1,1) #repeat along trajectory size, for every state
+					)
+				)
+ 		
+		#x_t_1 = self.forward(state_action)
+		with torch.no_grad():
+			a0 = policy.sample_action(state_action[:,:,:states_dim])
 
-		x_t_1 = self.forward(state_action)
+		x_t_1  = torch.einsum('jik,ljk->lji',[A,state_action[:,:,:states_dim]]) + a0
 
 		x_list = [state_action[:,:,:states_dim], x_t_1]
 
 		with torch.no_grad():
-			a0 = policy.sample_action(x_list[0])
+			a1 = policy.sample_action(x_list[1])
 
-		a_list = [a0]
-		r_list = [get_reward_fn('lin_dyn',x_t_1, a0)]
+		a_list = [a0, a1]
+		r_list = [get_reward_fn('lin_dyn',x_list[0], a0).unsqueeze(2),get_reward_fn('lin_dyn',x_t_1, a1).unsqueeze(2)]
 
-		state_action = torch.cat((x_t_1, a0),dim=2)
+		state_action = torch.cat((x_t_1, a1),dim=2)
 
 		for s in range(steps_to_unroll - 1):
 			if torch.isnan(torch.sum(state_action)):
@@ -88,13 +99,14 @@ class DirectEnvModel(torch.nn.Module):
 					print(state_action)
 					pdb.set_trace()
 
-			x_next = self.forward(state_action)
+			#x_next = self.forward(state_action)
+			x_next = torch.einsum('jik,ljk->lji',[A,state_action[:,:,:states_dim]]) + state_action[:,:,states_dim:]
 
 			#action_taken = state_action[:,:,states_dim:]
 			with torch.no_grad():
 				a = policy.sample_action(x_next)
 
-			r = get_reward_fn('lin_dyn', x_next, a) #this is where improvement happens when R_range = 1
+			r = get_reward_fn('lin_dyn', x_next, a).unsqueeze(2) #this is where improvement happens when R_range = 1
 			#r = get_reward_fn('lin_dyn', state_action[:,:,:states_dim], a)
 			next_state_action = torch.cat((x_next, a),dim=2)
 			
@@ -107,17 +119,18 @@ class DirectEnvModel(torch.nn.Module):
 			r_list.append(r)
 			x_list.append(x_next)
 			state_action = next_state_action
-		#x_list = torch.stack(x_list)
+		#x_list = torch.stack(x_list)			
 		x_list = torch.cat(x_list, 2).view(batch_size, -1, steps_to_unroll+1, states_dim)
-		a_list = torch.cat(a_list, 2).view(batch_size, -1, steps_to_unroll, actions_dim)
-		r_list = torch.cat(r_list, 1).view(batch_size, -1, steps_to_unroll, 1)
+		a_list = torch.cat(a_list, 2).view(batch_size, -1, steps_to_unroll+1, actions_dim)
+		r_list = torch.cat(r_list, 2).view(batch_size, -1, steps_to_unroll+1, 1)
 
 		#NOT true: there is no gradient for P_hat from here, with R_range = 1, the first state is from true dynamics so doesn't have grad
 		x_curr = x_list[:,:,:-1,:]
 		x_next = x_list[:,:,1:,:]
 		#print(x_next.contiguous().view(-1,2))
-		a_used = a_list[:,:,:,:]
-		r_used = r_list[:,:,:,:]
+		a_used = a_list[:,:,:-1,:]
+		r_used = r_list[:,:,:-1,:]
+
 		return x_curr, x_next, a_used, r_used
 
 		# #only need rewards from model for the steps we've unrolled, the rest is assumed to be equal to the environment's
@@ -168,7 +181,7 @@ class DirectEnvModel(torch.nn.Module):
 		for i in range(num_iters):
 			start_at = None if train else i
 			#assuming samples are disjoint
-			batch = dataset.sample(batch_size, structured=True, max_actions=max_actions, num_episodes=num_episodes, num_starting_states=num_starting_states, start_at=start_at)
+			batch = dataset.sample(batch_size, structured=True, max_actions=max_actions, num_episodes_per_start=num_episodes, num_starting_states=num_starting_states, start_at=start_at)
 			states_prev = torch.zeros((batch_size, max_actions, states_dim)).double().to(device)
 			states_next = torch.zeros((batch_size, max_actions, states_dim)).double().to(device)
 			rewards = torch.zeros((batch_size, max_actions)).double().to(device)
@@ -206,7 +219,7 @@ class DirectEnvModel(torch.nn.Module):
 			true_pe_grads_attached = grad(true_term.mean(), pe.parameters(), create_graph=True)
 			true_pe_grads = [true_pe_grads_attached[t].detach() for t in range(0,len(true_pe_grads_attached))]
 
-			print((i,true_pe_grads), file=true_pe_grads_file)
+			#print((i,true_pe_grads), file=true_pe_grads_file)
 			##########################################
 
 			rewards_np = np.asarray(rewards)
@@ -241,28 +254,29 @@ class DirectEnvModel(torch.nn.Module):
 				# plt.plot(model_x_curr[0,:,1,0].detach().numpy(), model_x_curr[0,:,1,1].detach().numpy())
 				# plt.show()
 
-				first_returns = discount_rewards(model_r_list.squeeze(3), discount, center=False, batch_wise=True)
+				#this doesn't happen correctly, shape of model_r_list doesn't work with this function, possibly also affecting second_returns
+
 				second_returns = true_rewards_after_R.double().to(device)#discounted_rewards_tensor[R_range + ell + 1 + 1]
 				#r2 = torch.zeros((unroll_num,batch_size, R_range, 1))
 
-
 				#can I match first_returns to closest second_returns in L2 distance of states?
-
-
+				
 				for ell in range(unroll_num):
-					total_model_returns = first_returns[:,ell] + second_returns[:,ell]
-					#r2[ell] = total_model_returns.unsqueeze(2)
-					model_log_probs = get_selected_log_probabilities(pe, model_x_curr[:, ell, :,:].contiguous().view(-1,states_dim), model_a_list[:,ell,:,:].contiguous().view(-1,actions_dim)).view(batch_size, -1, actions_dim)
+					#all returns match PERFECTLY, log probs look ok now 
+					first_returns = discount_rewards(model_r_list[:,ell], discount, center=False,batch_wise=True).squeeze()
+					total_model_returns = first_returns + second_returns[:,ell]
+					#r2[ell] = total_model_returns.unsqueeze(2)	
+					model_log_probs = get_selected_log_probabilities(pe, model_x_curr[:,ell,:,:].contiguous().view(-1,states_dim), model_a_list[:,ell,:,:].contiguous().view(-1,actions_dim)).view(batch_size, -1, actions_dim)
 
 					if total_model_returns.shape[1] > 1:
 						#alt_model_term[:,ell] = model_log_probs
-						model_term[:,ell] = torch.einsum('ijk,ijl->ik', [model_log_probs, ((total_model_returns - total_model_returns.mean(dim=1).unsqueeze(1))/(total_model_returns.std(dim=1).unsqueeze(1) + 1e-5)).unsqueeze(2)])
+						model_term[:,ell] = torch.einsum('ijk,ijl->ik', [model_log_probs,((total_model_returns - total_model_returns.mean(dim=1).unsqueeze(1))/(total_model_returns.std(dim=1).unsqueeze(1) + 1e-5)).unsqueeze(2)])
 					else:
-						model_term[:,ell] = torch.einsum('ijk,ijl->ik',[model_log_probs, total_model_returns.unsqueeze(2)])
+						model_term[:,ell] = torch.einsum('ijk,ijl->ik',[model_log_probs,total_model_returns.unsqueeze(2)])
 
 				model_pe_grads = grad(model_term.mean(), pe.parameters(), create_graph=True)
 
-				print((i,model_pe_grads), file=model_pe_grads_file)
+				#print((i,model_pe_grads), file=model_pe_grads_file)
 				loss = 0 
 				cos = nn.CosineSimilarity(dim=0, eps=1e-6)
 				for x,y in zip(true_pe_grads, model_pe_grads):
@@ -275,19 +289,20 @@ class DirectEnvModel(torch.nn.Module):
 					torch.save(self.state_dict(), env_name + '_paml_trained_model.pth')
 					best_loss = loss.detach()  
 
-				loss.backward()
-
-				nn.utils.clip_grad_value_(self.parameters(), 10.0)
-				#grads.append(torch.sum(P_hat.fc1.weight.grad))
-				if torch.norm(self.fc1.weight.grad) == 0:
-					pdb.set_trace()
-				
 				if train:
-					opt.step()
+					loss.backward()
 
-				if torch.isnan(torch.sum(self.fc1.weight.data)):
-					print('weight turned to nan, check gradients')
-					pdb.set_trace()
+					nn.utils.clip_grad_value_(self.parameters(), 10.0)
+					#grads.append(torch.sum(P_hat.fc1.weight.grad))
+					if torch.norm(self.fc1.weight.grad) == 0:
+						pdb.set_trace()
+					
+					if train:
+						opt.step()
+
+					if torch.isnan(torch.sum(self.fc1.weight.data)):
+						print('weight turned to nan, check gradients')
+						pdb.set_trace()
 
 				losses.append(loss.data.cpu())
 				lr_schedule.step()
@@ -313,27 +328,39 @@ class DirectEnvModel(torch.nn.Module):
 						# 		dataset.push(x, x_next, u, r)
 				########################################################
 				
+				print("R_range:   {},  batch_num:  {},  ep:   {},  paml_loss:    {:.7f}".format(R_range, i, j, loss.data.cpu()))
 				if train:
 					print("R_range:   {},  batch_num:  {},  ep:   {},  paml_loss:    {:.7f}".format(R_range, i, j, loss.data.cpu()))
 				else:
 					val_loss += loss.data.cpu()
+
 					#print(val_loss)
 		
 		if not train:
 			print("---------------------------------- Validation loss -----------------------------")
-			print("batch_num: {}, ep: {}, average validation paml_loss = {:.7f}".format(i, j, val_loss.data.cpu()/num_starting_states))
+			print("Validation loss: batch_num: {}, ep: {}, average validation paml_loss = {:.7f}".format(i, j, val_loss.data.cpu()/num_starting_states))
 			print("---------------------------------------------------------------------------------")
-		return best_loss
+		return R_range
 
 	#next two methods should be combined
-	def mle_validation_loss(self, states_next, state_actions, policy, R_range):
+	def mle_validation_loss(self, states_next, state_actions, policy, R_range, use_model=True):
 		with torch.no_grad():
 			continuous_actionspace = policy.continuous
 			squared_errors = torch.zeros_like(states_next)
 			step_state = state_actions.to(device)
 
 			for step in range(R_range - 1):
-				next_step_state = self.forward(step_state)
+				
+				if use_model:
+					next_step_state = self.forward(step_state)
+				else:
+					A = torch.from_numpy(
+						np.tile(
+							np.array([[0.9, 0.4], [-0.4, 0.9]]),
+							(step_state[0,:,0].shape[0],1,1) #repeat along trajectory size, for every state
+							)
+						)
+					next_step_state = torch.einsum('jik,ljk->lji',[A,step_state[:,:,:2]]) + step_state[:,:,2:]
 
 				squared_errors += F.pad(input=(states_next[:,step:,:] - next_step_state)**2, pad=(0,0,step,0,0,0), mode='constant', value=0)
 

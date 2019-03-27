@@ -31,13 +31,13 @@ MAX_TORQUE = 1.
 if __name__ == "__main__":
 	#initialize pe 
 	num_episodes = 1000
-	num_starting_states = 10
+	num_starting_states = 100
 	max_actions = 11
 	num_iters = 4000
 	discount = 0.9
 	R_range = 2 #horizon 1 --> R_range >= 2
 	batch_size = 1000
-	val_num_starting_states = 5
+	val_num_starting_states = 25
 	##########for deepmind setup###################
 	#dm_control2gym.create_render_mode('rs', show=False, return_pixel=True, height=240, width=320, camera_id=-1, overlays=(), depth=False, scene_option=None)
 

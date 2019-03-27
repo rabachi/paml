@@ -72,7 +72,7 @@ def discount_rewards(list_of_rewards, discount, center=True, batch_wise=False):
 			dim_mean = 0
 
 		for i in range(lim_range):
-				r = r + discount**i * shift(list_of_rewards,i,dir='up')
+			r = r + discount**i * shift(list_of_rewards,i,dir='up')
 
 		if center:
 			return (r - torch.mean(r, dim=dim_mean))/(torch.std(r,dim=dim_mean) + 1e-5)
@@ -140,16 +140,14 @@ def lin_dyn(steps, policy, all_rewards, x=None, discount=0.9):
 	u_list = []
 	r_list = []
 	for m in range(steps):
-		params = policy(torch.DoubleTensor(x).to(device))
-		params = (params[0].detach(), params[1].detach())
-		c = Normal(*params)
-		u = torch.clamp(c.rsample(), min=-1., max=1.).cpu().numpy()
-		#u = np.zeros_like(x)
+		with torch.no_grad():
+			u = policy.sample_action(torch.DoubleTensor(x).to(device)).cpu().numpy()
+		
 		u_list.append(u)
 
 		r = -(np.dot(x.T, x) + np.dot(u.T,u))
-
 		x_next = A.dot(x) + u
+
 		x_list.append(x_next)
 		r_list.append(r)
 		x = x_next
@@ -168,7 +166,10 @@ def lin_dyn(steps, policy, all_rewards, x=None, discount=0.9):
 
 	all_rewards.append(sum(r_list))
 
-	returns1 = discount_rewards(r_list, discount, center=True)
+	##WHY DIDN"T WORK WITH DISCOUNT + 0????? center was set to true ... 
+	#returns1 = discount_rewards(r_list, discount, center=False)
+	returns1 = torch.from_numpy(r_list)
+
 	#returns2 = discount_rewards(r2, discount, center=True)
 
 #    r = float32(x_curr[:,0] > 0.1)

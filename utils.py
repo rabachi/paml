@@ -1,6 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
-import gym
+# import gym
 import sys
 
 import torch
@@ -21,41 +21,12 @@ from scipy import linalg
 device = 'cpu'
 
 def discount_rewards(list_of_rewards, discount, center=True, batch_wise=False):
-	# r_tensor = torch.DoubleTensor(list_of_rewards)
-	# all_discounts = [discount**i for i in range(r_tensor.shape[0])]
-	# all_discounts.reverse()
-	# G_list = r_tensor * torch.DoubleTensor(all_discounts)
-	#return G_list - G_list.mean()
-	#list_of_rewards = list_of_rewards.numpy()
-
 	if isinstance(list_of_rewards, list) or isinstance(list_of_rewards, np.ndarray):
-
-		# if batch_wise:
-		# 	#this is wrong
-		# 	pdb.set_trace()
-			
-		# 	r = np.empty_like(list_of_rewards)
-		# 	for i in range(list_of_rewards.shape[1]):
-		# 		r[:,i] = discount**i * list_of_rewards[:,i]
-
-		# 	# Reverse the array direction for cumsum and then
-		# 	# revert back to the original order
-		# 	r = r[:,::-1].cumsum(axis=1)[:,::-1]
-		# 	if center:
-		# 		return torch.DoubleTensor((r - r.mean(axis=1))/(r.std(axis=1)+ 1e-5))
-		# 	else:
-		# 		return torch.DoubleTensor(r.copy())
-		# else:
 		r = np.zeros_like(list_of_rewards)
 
 		for i in range(len(list_of_rewards)):
 			r = r + discount**i * np.pad(list_of_rewards,(0,i),'constant')[i:]
 
-		# r = np.array([discount**i * list_of_rewards[i] 
-		# 	for i in range(len(list_of_rewards))])
-		# # Reverse the array direction for cumsum and then
-		# # revert back to the original order
-		# r = r[::-1].cumsum()[::-1]
 		if center:
 			return torch.DoubleTensor((r - r.mean())/(r.std()+ 1e-5))
 		else:
@@ -78,52 +49,6 @@ def discount_rewards(list_of_rewards, discount, center=True, batch_wise=False):
 			return (r - torch.mean(r, dim=dim_mean))/(torch.std(r,dim=dim_mean) + 1e-5)
 		else:
 			return r
-
-		# if batch_wise:
-			
-		# 	r = torch.zeros_like(list_of_rewards)
-		# 	for i in range(list_of_rewards.shape[1]):
-		# 		r = r + discount**i * shift(list_of_rewards,i,dir='up')
-
-		# 	# #this part not debugged!!!! .... looks fine
-		# 	# r = torch.zeros_like(list_of_rewards)
-
-		# 	# for i in range(list_of_rewards.shape[1]):
-		# 	# 	r[:,i] = discount**i * list_of_rewards[:,i]
-
-		# 	# discounted = torch.zeros_like(list_of_rewards)
-			
-		# 	# for i in range(r.shape[1]):
-		# 	# 	discounted[:,i] = torch.sum(r[:,i:], dim=1)
-		
-		# 	#seems like pytorch std is more correct? Bessel correction?
-		# 	if center:
-		# 		return (r - torch.mean(r, dim=1))/(torch.std(r,dim=1) + 1e-5)#_batch
-		# 	else:
-		# 		return r
-
-		# else:
-		# 	#something wrong here
-		# 	r = torch.zeros_like(list_of_rewards)
-		# 	for i in range(list_of_rewards.shape[0]):
-		# 		r = r + discount**i * shift(list_of_rewards,i,dir='up')
-
-		# 	# pdb.set_trace()
-		# 	# #not batchwise!!! only meant to be used with a single episode
-		# 	# r = torch.zeros_like(list_of_rewards)
-		# 	# for i in range(list_of_rewards.shape[0]):
-		# 	# 	r[i] = discount**i * list_of_rewards[i]
-
-		# 	# discounted = torch.zeros_like(list_of_rewards)
-			
-		# 	# for i in range(r.shape[0]):
-		# 	# 	discounted[i] = torch.sum(r[i:], dim=0)
-			
-		# 	#seems like pytorch std is more correct? Bessel correction?
-		# 	if center:
-		# 		return (r - torch.mean(r))/(torch.std(r) + 1e-5)#_batch
-		# 	else:
-		# 		return r
 
 
 def lin_dyn(steps, policy, all_rewards, x=None, discount=0.9):
@@ -148,6 +73,7 @@ def lin_dyn(steps, policy, all_rewards, x=None, discount=0.9):
 		r = -(np.dot(x.T, x) + np.dot(u.T,u))
 		x_next = A.dot(x) + u
 
+		
 		x_list.append(x_next)
 		r_list.append(r)
 		x = x_next
@@ -179,17 +105,24 @@ def lin_dyn(steps, policy, all_rewards, x=None, discount=0.9):
 
 
 def add_irrelevant_features(x, x_next, extra_dim, noise_level = 0.4):
-
 #    x_irrel= np.random.random((x.shape[0], extra_dim))
-	x_irrel= noise_level*np.random.randn(x.shape[0], extra_dim)
-#    x_irrel_next = x_irrel**2 + 1.0
-#    x_irrel_next = x_irrel**2
-#    x_irrel_next = 0.1*np.random.random((x.shape[0], extra_dim))
-	x_irrel_next = noise_level*np.random.randn(x.shape[0], extra_dim)
-#    x_irrel_next = x_irrel**2 + noise_level*np.random.randn(x.shape[0], extra_dim)    
-#    x_irrel_next = x_irrel**2 + np.random.random((x.shape[0], extra_dim))
-	
-	return np.hstack([x, x_irrel]), np.hstack([x_next, x_irrel_next])
+	if isinstance(x, np.ndarray):
+		x_irrel= noise_level*np.random.randn(x.shape[0], extra_dim)
+	#    x_irrel_next = x_irrel**2 + 1.0
+	#    x_irrel_next = x_irrel**2
+	#    x_irrel_next = 0.1*np.random.random((x.shape[0], extra_dim))
+		x_irrel_next = noise_level*np.random.randn(x.shape[0], extra_dim)
+	#    x_irrel_next = x_irrel**2 + noise_level*np.random.randn(x.shape[0], extra_dim)    
+	#    x_irrel_next = x_irrel**2 + np.random.random((x.shape[0], extra_dim))
+		
+		return np.hstack([x, x_irrel]), np.hstack([x_next, x_irrel_next])
+
+	elif isinstance(x, torch.Tensor):
+		x_irrel= noise_level*torch.randn(x.shape[0],x.shape[1],extra_dim).double()
+		x_irrel_next = noise_level*torch.randn(x.shape[0],x.shape[1],extra_dim).double()
+		
+		return torch.cat((x, x_irrel),2), torch.cat((x_next, x_irrel_next),2)
+
 
 
 def convert_one_hot(a, dim):

@@ -1,10 +1,10 @@
-from dm_control import suite
-import gym
-import dm_control2gym
+# from dm_control import suite
+# import gym
+# import dm_control2gym
 
 import numpy as np
 import matplotlib.pyplot as plt
-import gym
+# import gym
 import sys
 
 import torch
@@ -20,6 +20,7 @@ from models import *
 from networks import *
 from utils import *
 from rewardfunctions import *
+import pickle
 
 path = '/home/romina/CS294hw/for_viz/'
 #device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -30,21 +31,24 @@ MAX_TORQUE = 1.
 
 if __name__ == "__main__":
 	#initialize pe 
-	num_episodes = 1000
-	num_starting_states = 100
-	max_actions = 11
-	num_iters = 4000
+	rs = 7
+	torch.manual_seed(rs)
+	np.random.seed(rs)	
+	num_episodes = 1
+	num_starting_states = 300
+	max_actions = 3
+	num_iters = 6000
 	discount = 0.9
-	R_range = 2 #horizon 1 --> R_range >= 2
-	batch_size = 1000
-	val_num_starting_states = 25
+	R_range = 3 #horizon 1 --> R_range >= 2
+	batch_size = num_episodes*num_starting_states
+	val_num_starting_states = 75
+	val_batch_size = num_episodes*val_num_starting_states
 	##########for deepmind setup###################
 	#dm_control2gym.create_render_mode('rs', show=False, return_pixel=True, height=240, width=320, camera_id=-1, overlays=(), depth=False, scene_option=None)
 
 	# env = dm_control2gym.make(domain_name="cartpole", task_name="balance")	
 	# env.spec.id = 'dm_cartpole_balance'
 	#########################################
-	
 
 	###########for openai setup####################
 	# env = gym.make('CartPole-v0')
@@ -64,24 +68,31 @@ if __name__ == "__main__":
 	##########for linear system setup#############
 	dataset = ReplayMemory(200000)
 	validation_dataset = ReplayMemory(200000)
-	validation_num = 1000
+	validation_num = val_batch_size
 	x_d = np.zeros((0,2))
 	x_next_d = np.zeros((0,2))
 	r_d = np.zeros((0))
 
-	states_dim = 2
 	actions_dim = 2
 	continuous_actionspace = True
 	
-	state_dim = 5
-	extra_dim = state_dim - 2
+	states_dim = 2
+	extra_dim = states_dim - 2
 	errors_name = 'lin_dyn_single_episode_errors_' + loss_name + '_' + str(R_range)
 	#########################################
 
+	fname_training = 'training_' + str(rs) + '.pickle'
+	fname_val = 'val_' + str(rs) + '.pickle'
+
+	with open(fname_training, 'rb') as data:
+		dataset = pickle.load(data)
+
+	with open(fname_val, 'rb') as data:
+		validation_dataset = pickle.load(data)
 
 	#P_hat = ACPModel(states_dim, actions_dim, clip_output=False)
 	P_hat = DirectEnvModel(states_dim,actions_dim, MAX_TORQUE)
-	pe = Policy(states_dim, actions_dim, continuous=continuous_actionspace, std=-4.6)
+	pe = Policy(states_dim-extra_dim, actions_dim, continuous=continuous_actionspace, std=-2.5, max_torque=MAX_TORQUE)
 
 	P_hat.to(device)
 	pe.to(device)
@@ -101,31 +112,31 @@ if __name__ == "__main__":
 	epoch = 0
 	x_plot = np.zeros((num_episodes * 20, 2))
 
-	for st in range(num_starting_states):
-		print(st)
-		x_0 = 2*np.random.random(size = (2,)) - 0.5
-		for ep in range(num_episodes):
-			x_tmp, x_next_tmp, u_list, r_tmp, _ = lin_dyn(max_actions, pe, [], x=x_0)
+	# for st in range(num_starting_states):
+	# 	print(st)
+	# 	x_0 = 2*np.random.random(size = (2,)) - 0.5
+	# 	for ep in range(num_episodes):
+	# 		x_tmp, x_next_tmp, u_list, r_tmp, _ = lin_dyn(max_actions, pe, [], x=x_0)
 
-			for x, x_next, u, r in zip(x_tmp, x_next_tmp, u_list, r_tmp):
-				dataset.push(x, x_next, u, r)
+	# 		for x, x_next, u, r in zip(x_tmp, x_next_tmp, u_list, r_tmp):
+	# 			dataset.push(x, x_next, u, r)
 
-		#x_plot[ep: ep + 20] = x_tmp
+	# 	#x_plot[ep: ep + 20] = x_tmp
 
 
 	#get validation data
-	val_ststates=[]
-	for v in range(val_num_starting_states): 
-		x_0 = 2*np.random.random(size = (2,)) - 0.5
-		val_ststates.append(x_0)
+	# val_ststates=[]
+	# for v in range(val_num_starting_states): 
+	# 	x_0 = 2*np.random.random(size = (2,)) - 0.5
+	# 	val_ststates.append(x_0)
 
-	for x_0 in val_ststates:
-		print(x_0)
-		for ep in range(validation_num):	
-			x_tmp, x_next_tmp, u_list, r_tmp, _ = lin_dyn(max_actions*2, pe, [], x=x_0)
+	# for x_0 in val_ststates:
+	# 	print(x_0)
+	# 	for ep in range(validation_num):	
+	# 		x_tmp, x_next_tmp, u_list, r_tmp, _ = lin_dyn(max_actions*2, pe, [], x=x_0)
 
-			for x, x_next, u, r in zip(x_tmp, x_next_tmp, u_list, r_tmp):
-				validation_dataset.push(x, x_next, u, r)
+	# 		for x, x_next, u, r in zip(x_tmp, x_next_tmp, u_list, r_tmp):
+	# 			validation_dataset.push(x, x_next, u, r)
 
 		# s = env.reset()
 		# states = [s]
@@ -180,7 +191,7 @@ if __name__ == "__main__":
 	#validation data
 	first_val_loss = 0
 	for i in range(val_num_starting_states):
-		val_data = validation_dataset.sample(validation_num, structured=True, max_actions=max_actions, num_episodes=validation_num, num_starting_states=val_num_starting_states, start_at=i)
+		val_data = validation_dataset.sample(val_batch_size, structured=True, max_actions=max_actions, num_episodes_per_start=num_episodes, num_starting_states=val_num_starting_states, start_at=None)
 
 		val_states_prev = torch.zeros((validation_num, max_actions, states_dim)).double()
 		val_states_next = torch.zeros((validation_num, max_actions, states_dim)).double()
@@ -204,7 +215,7 @@ if __name__ == "__main__":
 	best_val_loss = first_val_loss
 
 	for i in range(num_iters):
-		batch = dataset.sample(batch_size, structured=True, max_actions=max_actions, num_episodes=num_episodes, num_starting_states=num_starting_states)
+		batch = dataset.sample(batch_size, structured=True, max_actions=max_actions, num_episodes_per_start=num_episodes, num_starting_states=num_starting_states, start_at=None)
 
 		batch_states_prev = torch.zeros((batch_size, max_actions, states_dim)).double()
 		batch_states_next = torch.zeros((batch_size, max_actions, states_dim)).double()
@@ -237,30 +248,35 @@ if __name__ == "__main__":
 		best = P_hat.train_mle(pe, state_actions, batch_states_next, 1, max_actions, R_range, opt, "lin_dyn", continuous_actionspace, losses)
 
 		val_loss = 0
-		for i in range(val_num_starting_states):
-			val_data = validation_dataset.sample(validation_num, structured=True, max_actions=max_actions, num_episodes=validation_num, num_starting_states=val_num_starting_states, start_at=i)
+		#for i in range(val_num_starting_states):
+		val_data = validation_dataset.sample(val_batch_size, structured=True, max_actions=max_actions, num_episodes_per_start=num_episodes, num_starting_states=val_num_starting_states, start_at=None)
 
-			val_states_prev = torch.zeros((validation_num, max_actions, states_dim)).double()
-			val_states_next = torch.zeros((validation_num, max_actions, states_dim)).double()
-			val_rewards = torch.zeros((validation_num, max_actions)).double()
-			val_actions_tensor = torch.zeros((validation_num, max_actions, actions_dim)).double()
-			#discounted_rewards_tensor = torch.zeros((batch_size, max_actions, 1)).double()
+		val_states_prev = torch.zeros((validation_num, max_actions, states_dim)).double()
+		val_states_next = torch.zeros((validation_num, max_actions, states_dim)).double()
+		val_rewards = torch.zeros((validation_num, max_actions)).double()
+		val_actions_tensor = torch.zeros((validation_num, max_actions, actions_dim)).double()
+		#discounted_rewards_tensor = torch.zeros((batch_size, max_actions, 1)).double()
 
-			for v in range(validation_num):
-				#batch = dataset.sample(max_actions, structured=True, num_episodes=num_episodes)
-				val_states_prev[v] = torch.tensor([samp.state for samp in val_data[v]]).double()
-				val_states_next[v] = torch.tensor([samp.next_state for samp in val_data[v]]).double()
-				val_rewards[v] = torch.tensor([samp.reward for samp in val_data[v]]).double()
-				val_actions_tensor[v] = torch.tensor([samp.action for samp in val_data[v]]).double()
-				#discounted_rewards_tensor[b] = discount_rewards(rewards[b].unsqueeze(1), discount, center=False).to(device)
+		for v in range(validation_num):
+			#batch = dataset.sample(max_actions, structured=True, num_episodes=num_episodes)
+			val_states_prev[v] = torch.tensor([samp.state for samp in val_data[v]]).double()
+			val_states_next[v] = torch.tensor([samp.next_state for samp in val_data[v]]).double()
+			val_rewards[v] = torch.tensor([samp.reward for samp in val_data[v]]).double()
+			val_actions_tensor[v] = torch.tensor([samp.action for samp in val_data[v]]).double()
+			#discounted_rewards_tensor[b] = discount_rewards(rewards[b].unsqueeze(1), discount, center=False).to(device)
 
-			val_state_actions = torch.cat((val_states_prev,val_actions_tensor), dim=2)
-			val_loss += P_hat.mle_validation_loss(val_states_next, val_state_actions, pe, R_range)
+		val_state_actions = torch.cat((val_states_prev,val_actions_tensor), dim=2)
+		if i == 0 or i == num_iters-1:
+			val_loss += P_hat.mle_validation_loss(val_states_next, val_state_actions, pe, R_range, use_model=True)
+		else:
+			val_loss += P_hat.mle_validation_loss(val_states_next, val_state_actions, pe, R_range, use_model=True)
+		
+		#val_loss = val_loss #/ val_num_starting_states
 
-		val_loss = val_loss / val_num_starting_states
+		print('validation loss: ', val_loss)
 
 		if val_loss < best_val_loss:
-			print('best_val_loss:      ', val_loss.detach().data)
+			#print('best_val_loss:      ', val_loss.detach().data)
 			torch.save(P_hat.state_dict(), 'lin_dyn_horizon_{}_traj_{}_mle_trained_model.pth'.format(R_range,max_actions+1))
 			#torch.save(P_hat, 'mle_trained_model.pth')
 			best_val_loss = val_loss  

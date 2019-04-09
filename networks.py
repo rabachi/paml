@@ -1,6 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
-import gym
+# import gym
 import sys
 
 import torch
@@ -14,7 +14,6 @@ import pdb
 from utils import *
 from collections import namedtuple
 import random
-from torchviz import make_dot
 
 
 device='cpu'
@@ -59,15 +58,22 @@ class ReplayMemory(object):
 			if start_at:
 				starting_state = np.linspace(start_at, start_at + num_starts_per_batch, num=num_starts_per_batch)
 			else:
-				starting_state = np.random.choice(range(num_starting_states), num_starts_per_batch, replace=False)
+				#this is the problem, as long as order is fixed, the loss is smooth, when order changes, everything gets messed up
+				#starting_state = np.random.choice(range(num_starting_states), num_starts_per_batch, replace=False)
+				# print(starting_state)
+				starting_state = range(num_starting_states)
+				#starting_state = np.array([8, 5, 0, 2, 1, 9, 7, 3, 6, 4])
+				#starting_state = np.array([6, 7, 8, 9, 0, 1, 2, 3, 4, 5])
 			#starting_state is a list now
 			
 			ep = np.zeros((num_starts_per_batch, num_episodes_per_start))
 			start_id = np.zeros((num_starts_per_batch, num_episodes_per_start))
 
 			for start in range(num_starts_per_batch):
-				ep[start] = np.random.choice(range(num_episodes_per_start), num_episodes_per_start, replace=False)
-				start_id[start] = ep[start]*max_actions + starting_state[start]*num_episodes_per_start*max_actions
+				#pdb.set_trace()
+				#ep[start] = np.random.choice(range(num_episodes_per_start), num_episodes_per_start, replace=False)
+				ep[start] = range(num_episodes_per_start)
+				start_id[start] = ep[start] * max_actions + starting_state[start]*num_episodes_per_start * max_actions
 
 			start_id = start_id.reshape(batch_size).astype(int)
 			for b in range(batch_size):
@@ -87,15 +93,15 @@ class ReplayMemory(object):
 
 
 class Policy(nn.Module):
-	def __init__(self, in_dim, out_dim, continuous=False, std=-0.8, max_torque=1. ):#-0.8 GOOD
+	def __init__(self, in_dim, out_dim, continuous=False, std=-0.8, max_torque=1.):#-0.8 GOOD
 		super(Policy, self).__init__()
 		self.n_actions = out_dim
 		self.continuous = continuous
 		self.max_torque = max_torque
-		#self.lin1 = nn.Linear(in_dim, 4)
-		#self.relu = nn.ReLU()
+		self.lin1 = nn.Linear(in_dim, 4)
+		self.relu = nn.ReLU()
 		#self.theta = nn.Linear(4, out_dim)
-		self.theta = nn.Linear(in_dim, out_dim)
+		self.theta = nn.Linear(4, out_dim)
 
 		#torch.nn.init.xavier_uniform_(self.lin1.weight)
 		torch.nn.init.xavier_uniform_(self.theta.weight)
@@ -107,7 +113,6 @@ class Policy(nn.Module):
 
 	def forward(self, x):
 		#phi = self.relu(self.lin1(x))
-
 		if not self.continuous:
 			y = self.theta(phi)
 			out = nn.Softmax(dim=-1)(y)
@@ -115,6 +120,7 @@ class Policy(nn.Module):
 			return out, 0
 
 		else:
+			x = self.relu(self.lin1(x))
 			mu = nn.Tanh()(self.theta(x))
 			#sigma = torch.exp(self.log_std(phi))
 			sigma = self.log_std.exp().expand_as(mu)
@@ -132,7 +138,7 @@ class Policy(nn.Module):
 			#the dim of this could be wrong due to change to batch_size. NOT TESTED
 		else:
 			c = Normal(*action_probs)
-			a = torch.clamp(c.rsample(), min=-self.max_torque, max=self.max_torque)
+			a = 0.1* torch.clamp(c.rsample(), min=-self.max_torque, max=self.max_torque)
 
 		return a
 

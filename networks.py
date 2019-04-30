@@ -93,12 +93,11 @@ class ReplayMemory(object):
 
 
 class Policy(nn.Module):
-	def __init__(self, in_dim, out_dim, continuous=False, std=-0.8, max_torque=1., action_multiplier=0.1):#-0.8 GOOD
+	def __init__(self, in_dim, out_dim, continuous=False, std=-0.8, max_torque=1.):#-0.8 GOOD
 		super(Policy, self).__init__()
 		self.n_actions = out_dim
 		self.continuous = continuous
 		self.max_torque = max_torque
-		self.action_multiplier = action_multiplier
 		self.lin1 = nn.Linear(in_dim, 8)
 		self.relu = nn.ReLU()
 		#self.lin2 = nn.Linear(32, 16)
@@ -145,7 +144,7 @@ class Policy(nn.Module):
 		else:
 			c = Normal(*action_probs)
 			#a = 0.1*torch.clamp(c.rsample(), min=-self.max_torque, max=self.max_torque)
-			a = self.action_multiplier * c.rsample()
+			a = 0.5*c.rsample()#self.action_multiplier * c.rsample()
 
 		return a#, values
 

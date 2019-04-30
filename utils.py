@@ -28,7 +28,7 @@ def discount_rewards(list_of_rewards, discount, center=True, batch_wise=False):
 			r = r + discount**i * np.pad(list_of_rewards,(0,i),'constant')[i:]
 
 		if center:
-			return torch.DoubleTensor((r - r.mean())/(r.std()+ 1e-5))
+			return torch.DoubleTensor((r - list_of_rewards.mean())/(list_of_rewards.std()+ 1e-5))
 		else:
 			return torch.DoubleTensor(r.copy())
 

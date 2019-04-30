@@ -46,7 +46,9 @@ def paml_train(P_hat,
 				losses,
 				true_r_list,
 				true_x_curr,
+				true_x_next,
 				true_a_list,
+				true_a_prime_list,
 				step_state):
 	
 	best_loss = 15000
@@ -60,19 +62,25 @@ def paml_train(P_hat,
 	
 	#calculate true gradients
 	pe.zero_grad()
-	true_log_probs = get_selected_log_probabilities(pe, true_x_curr, true_a_list).squeeze()
-	true_returns = discount_rewards(true_r_list[:,ell], discount, center=False, batch_wise=True)
+	true_log_probs = get_selected_log_probabilities(pe, true_x_next, true_a_prime_list).squeeze()
+	true_returns = discount_rewards(true_r_list[:,ell, 1:], discount, center=False, batch_wise=True)
 	true_term = true_log_probs * true_returns
 
-	save_stats(true_returns, true_r_list, true_a_list, true_x_curr, prefix='true_reinforce_')			
+	save_stats(true_returns, true_r_list, true_a_list, true_x_curr, prefix='true_reinforce_')
 
-	true_pe_grads = []
+	
+	true_pe_grads = torch.DoubleTensor()
 	for st in range(num_starting_states):
 		true_pe_grads_attached = grad(true_term[st*num_episodes:num_episodes*(st+1)].mean(),pe.parameters(), create_graph=True)
-		true_pe_grads.append([true_pe_grads_attached[t].detach() for t in range(0,len(true_pe_grads_attached))])
+		for g in range(len(true_pe_grads_attached)):
+			true_pe_grads = torch.cat((true_pe_grads,true_pe_grads_attached[g].detach().view(-1)))
+		# true_pe_grads.append(torch.cat([true_pe_grads_attached[t].detach().view(-1) for t in range(0,len(true_pe_grads_attached))]))
 
-	# true_pe_grads = []
+	# true_pe_grads = torch.DoubleTensor()
 	# true_pe_grads_attached = grad(true_term.mean(),pe.parameters(), create_graph=True)
+	# for g in range(len(true_pe_grads_attached)):
+	# 	true_pe_grads = torch.cat((true_pe_grads,true_pe_grads_attached[g].detach().view(-1)))
+
 	# for t in range(0,len(true_pe_grads_attached)):
 	# 	true_pe_grads.append(true_pe_grads_attached[t].detach())
 
@@ -80,31 +88,37 @@ def paml_train(P_hat,
 		opt.zero_grad()
 		pe.zero_grad()
 		#calculate model gradients
-
 		#Do i need this line? seems to make a big difference .... 
-		#step_state = torch.cat((true_x_curr[:,:,0],true_a_list[:,:,0]),dim=2)
-		model_x_curr, model_x_next, model_a_list, model_r_list, _ = P_hat.unroll(step_state[:,:unroll_num,:], pe, states_dim, A_numpy, steps_to_unroll=R_range, continuous_actionspace=True, use_model=use_model, policy_states_dim=states_dim)
+		step_state = torch.cat((true_x_curr[:,:,0],true_a_list[:,:,0]),dim=2)
+		model_x_curr, model_x_next, model_a_list, model_r_list, model_a_prime_list = P_hat.unroll(step_state[:,:unroll_num,:], pe, states_dim, A_numpy, steps_to_unroll=R_range, continuous_actionspace=True, use_model=use_model, policy_states_dim=states_dim)
 
-		model_returns = discount_rewards(model_r_list[:,ell], discount, center=False, batch_wise=True)
-		model_log_probs = get_selected_log_probabilities(pe, model_x_curr, model_a_list).squeeze()
+		model_returns = discount_rewards(model_r_list[:,ell, 1:], discount, center=False, batch_wise=True)
+		model_log_probs = get_selected_log_probabilities(pe, model_x_next, model_a_prime_list).squeeze()
 		#model_term = torch.einsum('ijk,ijl->ik', [model_log_probs,  model_returns])
 		model_term = model_log_probs * model_returns
 
 		save_stats(model_returns, model_r_list, model_a_list, model_x_curr, prefix='model_reinforce_')
 
-		#model_pe_grads = grad(model_term.mean(),pe.parameters(), create_graph=True)
-		model_pe_grads = []
+		# model_pe_grads = torch.DoubleTensor()
+		# model_pe_grads_split = grad(model_term.mean(),pe.parameters(), create_graph=True)
+		# for g in range(len(model_pe_grads_split)):
+		# 	model_pe_grads = torch.cat((model_pe_grads,model_pe_grads_split[g].view(-1)))
+
+		model_pe_grads = torch.DoubleTensor()
 		for st in range(num_starting_states):
-			model_pe_grads.append(list(grad(model_term[num_episodes*st:num_episodes*(st+1)].mean(),pe.parameters(), create_graph=True)))
-		
+			model_pe_grads_split = list(grad(model_term[num_episodes*st:num_episodes*(st+1)].mean(),pe.parameters(), create_graph=True))
+			for g in range(len(model_pe_grads_split)):
+				model_pe_grads = torch.cat((model_pe_grads,model_pe_grads_split[g].view(-1)))
+
 		#model - true
-		loss = 0
-		#cos = nn.CosineSimilarity(dim=0, eps=1e-6)
-		for stt,stm in zip(true_pe_grads, model_pe_grads):
-			for x,y in zip(stt, stm):
-				loss = loss + torch.norm(x-y)**2
+		# loss = 0
+		# cos = nn.CosineSimilarity(dim=0, eps=1e-6)
+		# loss = cos(true_pe_grads, model_pe_grads)
+		# for stt,stm in zip(true_pe_grads, model_pe_grads):
+		# 	for x,y in zip(stt, stm):
+		# 		loss = loss + torch.norm(x-y)**2
 		
-		loss = torch.sqrt(loss/num_starting_states)
+		loss = torch.sqrt((true_pe_grads-model_pe_grads).pow(2).sum())#/num_starting_states)
 
 		if loss.detach().cpu() < best_loss and use_model:
 			#Save model and losses so far
@@ -153,7 +167,6 @@ def reinforce(pe,
 	batch_actions = torch.zeros((batch_size, max_actions, actions_dim)).double()
 	batch_returns = torch.zeros((batch_size, max_actions, 1)).double()
 
-	divide_by = pe.action_multiplier
 	for ep in range(int(num_episodes/batch_size)):
 		
 		with torch.no_grad():
@@ -165,18 +178,18 @@ def reinforce(pe,
 			step_state[:,:unroll_num,states_dim:] = policy_estimator.sample_action(step_state[:,:unroll_num,:states_dim])
 			
 			model_x_curr, model_x_next, model_a_list, model_r_list, model_a_prime_list = P_hat.unroll(step_state[:,:unroll_num,:], pe, states_dim, A_numpy, steps_to_unroll=R_range, continuous_actionspace=True, use_model=use_model, policy_states_dim=states_dim)
-			all_rewards.extend(model_r_list.contiguous().view(-1,max_actions).sum(dim=1).tolist())
+			all_rewards.extend(model_r_list[:,ell,:-1].contiguous().view(-1,max_actions).sum(dim=1).tolist())
 
 		batch_states = model_x_curr
 		batch_actions = model_a_list
-		batch_returns = discount_rewards(model_r_list[:,ell], discount, center=True, batch_wise=True)
+		batch_returns = discount_rewards(model_r_list[:,ell,:-1], discount, center=True, batch_wise=True)
 		
 		if (ep == 0):
 			save_stats(batch_returns, None, batch_actions, batch_states, value=None, prefix='true_policy_reinforce_')
 		if (ep == int(num_episodes/batch_size) - 1):
 			save_stats(batch_returns, None, batch_actions, batch_states, value=None, prefix='model_policy_reinforce_')
 
-		model_log_probs = get_selected_log_probabilities(pe, batch_states, batch_actions/divide_by).squeeze()
+		model_log_probs = get_selected_log_probabilities(pe, batch_states, batch_actions/0.5).squeeze()
 		model_term = model_log_probs * batch_returns
 
 		loss = -model_term.mean()
@@ -200,9 +213,10 @@ if __name__=="__main__":
 	num_episodes = 1
 
 	discount = 0.9
-	num_starting_states = 2000
+	plan = True
+	num_starting_states = 200 if not plan else 4000
 
-	max_actions = 5
+	max_actions = 8
 	states_dim = 2
 	actions_dim = 2
 	salient_states_dim = 2
@@ -211,16 +225,17 @@ if __name__=="__main__":
 	use_model = True
 	continuous_actionspace = True
 
+
 	batch_size = num_starting_states * num_episodes
 
-	action_multiplier = 0.5
-	policy_estimator = Policy(states_dim, actions_dim, continuous=continuous_actionspace, std=-2.0, max_torque=MAX_TORQUE, action_multiplier=action_multiplier)
+	action_multiplier = 0.0
+	policy_estimator = Policy(states_dim, actions_dim, continuous=continuous_actionspace, std=-2.0, max_torque=MAX_TORQUE)
 	policy_estimator.double()
 
-	P_hat = DirectEnvModel(states_dim,actions_dim, MAX_TORQUE)#, action_multiplier=0.1)
+	P_hat = DirectEnvModel(states_dim,actions_dim, MAX_TORQUE, mult=action_multiplier)#, action_multiplier=0.1)
 	P_hat.double()
-	P_hat.load_state_dict(torch.load('trained_model_paml_lindyn_horizon5_traj6.pth', map_location=device))
-	#P_hat.load_state_dict(torch.load('1model_paml_checkpoint_train_True_lin_dyn_horizon3_traj4_using1states.pth', map_location=device))
+	#P_hat.load_state_dict(torch.load('trained_model_paml_lindyn_horizon5_traj6.pth', map_location=device))
+	#P_hat.load_state_dict(torch.load('1model_paml_checkpoint_train_True_lin_dyn_horizon8_traj9_using1states.pth', map_location=device))
 
 	opt = optim.SGD(P_hat.parameters(), lr=1e-5, momentum=0.90, nesterov=True)
 	#opt = optim.Adam(P_hat.parameters(), lr=1e-5, weight_decay=1e-8)
@@ -252,24 +267,25 @@ if __name__=="__main__":
 
 
 	########## REINFORCE ############
-	optimizer = optim.Adam(policy_estimator.parameters(), lr=0.01)
-	batch_size = 10
-	use_model = False
-	all_rewards = reinforce(policy_estimator, 
-							A_numpy,
-							P_hat,
-							num_episodes*num_starting_states, 
-							states_dim,
-							actions_dim, 
-							salient_states_dim, 
-							R_range,
-							use_model,
-							optimizer
-							)
+	if plan:
+		optimizer = optim.Adam(policy_estimator.parameters(), lr=0.01)
+		batch_size = 5
+		use_model = False
+		all_rewards = reinforce(policy_estimator, 
+								A_numpy,
+								P_hat,
+								num_episodes*num_starting_states, 
+								states_dim,
+								actions_dim, 
+								salient_states_dim, 
+								R_range,
+								use_model,
+								optimizer
+								)
 
-	np.save('reinforce_rewards',np.asarray(all_rewards)) 
+		np.save('reinforce_rewards',np.asarray(all_rewards)) 
 
-	pdb.set_trace()
+		pdb.set_trace()
 	#################################
 
 
@@ -289,7 +305,7 @@ if __name__=="__main__":
 			val_step_state[b*val_num_episodes:val_num_episodes*(b+1),:unroll_num,:states_dim] = torch.from_numpy(x_0).double()
 
 		val_step_state[:,:unroll_num,states_dim:] = policy_estimator.sample_action(val_step_state[:,:unroll_num,:states_dim]) #I think all this does is make the visualizations look better, shouldn't affect performance (or visualizations ... )
-		val_true_x_curr, val_true_x_next, val_true_a_list, val_true_r_list,_ = P_hat.unroll(val_step_state[:,:unroll_num,:], policy_estimator, states_dim, A_numpy, steps_to_unroll=R_range, continuous_actionspace=True, use_model=False, policy_states_dim=states_dim)
+		val_true_x_curr, val_true_x_next, val_true_a_list, val_true_r_list, val_true_a_prime_list = P_hat.unroll(val_step_state[:,:unroll_num,:], policy_estimator, states_dim, A_numpy, steps_to_unroll=R_range, continuous_actionspace=True, use_model=False, policy_states_dim=states_dim)
 
 		#generate training data
 		train_step_state = torch.zeros((batch_size, unroll_num, states_dim+actions_dim)).double()
@@ -298,13 +314,15 @@ if __name__=="__main__":
 			train_step_state[b*num_episodes:num_episodes*(b+1),:unroll_num,:states_dim] = torch.from_numpy(x_0).double()
 
 		train_step_state[:,:unroll_num,states_dim:] = policy_estimator.sample_action(train_step_state[:,:unroll_num,:states_dim])#I think all this does is make the visualizations look better, shouldn't affect performance (or visualizations ... )
-		train_true_x_curr, train_true_x_next, train_true_a_list, train_true_r_list,_ = P_hat.unroll(train_step_state[:,:unroll_num,:], policy_estimator, states_dim, A_numpy, steps_to_unroll=R_range, continuous_actionspace=True, use_model=False, policy_states_dim=states_dim)
+		train_true_x_curr, train_true_x_next, train_true_a_list, train_true_r_list, train_true_a_prime_list = P_hat.unroll(train_step_state[:,:unroll_num,:], policy_estimator, states_dim, A_numpy, steps_to_unroll=R_range, continuous_actionspace=True, use_model=False, policy_states_dim=states_dim)
 
 	print('Done!')
 	#get accuracy of true dynamics on validation data
 	true_r_list = val_true_r_list
 	true_x_curr = val_true_x_curr
 	true_a_list = val_true_a_list
+	true_a_prime_list = val_true_a_prime_list
+	true_x_next = val_true_x_next
 	step_state = val_step_state
 
 	kwargs = {
@@ -325,7 +343,9 @@ if __name__=="__main__":
 			'losses'             : [],
 			'true_r_list'        : true_r_list,
 			'true_x_curr' 		 : true_x_curr,
+			'true_x_next'		 : true_x_next,
 			'true_a_list'        : true_a_list,
+			'true_a_prime_list'  : true_a_prime_list,
 			'step_state'         : step_state
 			}
 
@@ -334,11 +354,13 @@ if __name__=="__main__":
 	kwargs['num_starting_states'] = val_num_starting_states
 	kwargs['true_r_list'] = val_true_r_list
 	kwargs['true_x_curr'] = val_true_x_curr
+	kwargs['true_x_next'] = val_true_x_next
 	kwargs['true_a_list'] = val_true_a_list
+	kwargs['true_a_prime_list'] = val_true_a_prime_list
 	kwargs['step_state'] = val_step_state
 	kwargs['use_model'] = False
 	paml_train(**kwargs)
-
+	
 	val_losses = []
 	kwargs['use_model'] = use_model
 	for i in range(120):
@@ -347,17 +369,21 @@ if __name__=="__main__":
 		kwargs['num_starting_states'] = val_num_starting_states
 		kwargs['true_r_list'] = val_true_r_list
 		kwargs['true_x_curr'] = val_true_x_curr
+		kwargs['true_x_next'] = val_true_x_next
 		kwargs['true_a_list'] = val_true_a_list
+		kwargs['true_a_prime_list'] = val_true_a_prime_list
 		kwargs['step_state'] = val_step_state
 		kwargs['losses'] = val_losses
 		paml_train(**kwargs)
-
+	
 		kwargs['train'] = train
 		kwargs['num_episodes'] = num_episodes
 		kwargs['num_starting_states'] = num_starting_states
 		kwargs['true_r_list'] = train_true_r_list
 		kwargs['true_x_curr'] = train_true_x_curr
+		kwargs['true_x_next'] = train_true_x_next
 		kwargs['true_a_list'] = train_true_a_list
+		kwargs['true_a_prime_list'] = train_true_a_prime_list
 		kwargs['step_state'] = train_step_state
 		kwargs['losses'] = losses
 		paml_train(**kwargs)

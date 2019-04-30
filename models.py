@@ -20,13 +20,13 @@ import os
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 class DirectEnvModel(torch.nn.Module):
-	def __init__(self, states_dim, N_ACTIONS, MAX_TORQUE):
+	def __init__(self, states_dim, N_ACTIONS, MAX_TORQUE, mult=0.1):
 		super(DirectEnvModel, self).__init__()
 		# build network layers
 		self.states_dim = states_dim
 		self.n_actions = N_ACTIONS
 		self.max_torque = MAX_TORQUE
-
+		self.mult = mult
 		self.fc1 = nn.Linear(states_dim + N_ACTIONS, 32)
 		self.fc2 = nn.Linear(32, 32)
 		# self.fc3 = nn.Linear(64, 32)
@@ -138,7 +138,7 @@ class DirectEnvModel(torch.nn.Module):
 		#print(x_next.contiguous().view(-1,2))
 		a_used = a_list[:,:,:-1,:]
 		a_prime = a_list[:,:,1:,:]
-		r_used = r_list[:,:,:-1,:]
+		r_used = r_list#[:,:,:-1,:]
 
 		return x_curr, x_next, a_used, r_used, a_prime 
 

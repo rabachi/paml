@@ -17,8 +17,8 @@ import pdb
 from scipy import linalg
 
 
-#device = 'cuda' if torch.cuda.is_available() else 'cpu'
-device = 'cpu'
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+#device = 'cpu'
 
 def discount_rewards(list_of_rewards, discount, center=True, batch_wise=False):
 	if isinstance(list_of_rewards, list) or isinstance(list_of_rewards, np.ndarray):
@@ -33,31 +33,32 @@ def discount_rewards(list_of_rewards, discount, center=True, batch_wise=False):
 			return torch.DoubleTensor(r.copy())
 
 	elif isinstance(list_of_rewards, torch.Tensor):
-
 		r = torch.zeros_like(list_of_rewards)
 		if batch_wise:
 			lim_range = list_of_rewards.shape[1]
-			dim_mean = 1 
 		else:
 			lim_range = list_of_rewards.shape[0]
-			dim_mean = 0
 
 		for i in range(lim_range):
-			r = r + discount**i * shift(list_of_rewards,i,dir='up')
+			r = r + discount**i * shift(list_of_rewards,i, dir='up')
 
 		if center:
-			return (r - torch.mean(r, dim=dim_mean))/(torch.std(r,dim=dim_mean) + 1e-5)
+			return (r - torch.mean(list_of_rewards))/(torch.std(list_of_rewards) + 1e-5)
 		else:
 			return r
 
 
-def lin_dyn(steps, policy, all_rewards, x=None, discount=0.9):
-	
-	A = np.array([[0.9, 0.4], [-0.4, 0.9]])
+def lin_dyn(A, steps, policy, all_rewards, x=None, extra_dim=0, discount=0.9):
+
 	#B = np.eye(2)
-#    print linalg.eig(A)[0], np.abs(linalg.eig(A)[0])
-	if x is None:        
-		x = np.array([1.,0.])
+	#print linalg.eig(A)[0], np.abs(linalg.eig(A)[0])
+
+	#This should be changed if it's actually used anywhere, to enable use with multiple x dimensions
+	# if x is None:        
+	# 	x = np.array([1.,0.])
+
+
+	x = add_irrelevant_features(x, extra_dim=extra_dim, noise_level=0.4)
 		
 	EYE = np.eye(x.shape[0])
 
@@ -71,9 +72,15 @@ def lin_dyn(steps, policy, all_rewards, x=None, discount=0.9):
 		u_list.append(u)
 
 		r = -(np.dot(x.T, x) + np.dot(u.T,u))
-		x_next = A.dot(x) + u
+		#r = -(np.dot(x[:-extra_dim].T, x[:-extra_dim]) + np.dot(u.T,u))
+		if extra_dim > 0:
+			x_next = np.asarray(A.dot(x[:-extra_dim])) #in case only one dimension is relevant
+		else:
+			x_next = A.dot(x)
 
-		
+		x_next = add_irrelevant_features(x_next, extra_dim=extra_dim, noise_level=0.4)
+		x_next = x_next + u
+
 		x_list.append(x_next)
 		r_list.append(r)
 		x = x_next
@@ -93,8 +100,8 @@ def lin_dyn(steps, policy, all_rewards, x=None, discount=0.9):
 	all_rewards.append(sum(r_list))
 
 	##WHY DIDN"T WORK WITH DISCOUNT + 0????? center was set to true ... 
-	#returns1 = discount_rewards(r_list, discount, center=False)
-	returns1 = torch.from_numpy(r_list)
+	#returns1 = discount_rewards(r_list, discount, center=True)
+	#returns1 = torch.from_numpy(r_list)
 
 	#returns2 = discount_rewards(r2, discount, center=True)
 
@@ -104,25 +111,23 @@ def lin_dyn(steps, policy, all_rewards, x=None, discount=0.9):
 	return x_curr, x_next, u_list, returns1, r_list
 
 
-def add_irrelevant_features(x, x_next, extra_dim, noise_level = 0.4):
+def add_irrelevant_features(x, extra_dim, noise_level = 0.4):
 #    x_irrel= np.random.random((x.shape[0], extra_dim))
 	if isinstance(x, np.ndarray):
-		x_irrel= noise_level*np.random.randn(x.shape[0], extra_dim)
+		x_irrel= noise_level*np.random.randn(1, extra_dim).reshape(-1,)
 	#    x_irrel_next = x_irrel**2 + 1.0
 	#    x_irrel_next = x_irrel**2
 	#    x_irrel_next = 0.1*np.random.random((x.shape[0], extra_dim))
-		x_irrel_next = noise_level*np.random.randn(x.shape[0], extra_dim)
+	#	x_irrel_next = noise_level*np.random.randn(x.shape[0], extra_dim)
 	#    x_irrel_next = x_irrel**2 + noise_level*np.random.randn(x.shape[0], extra_dim)    
 	#    x_irrel_next = x_irrel**2 + np.random.random((x.shape[0], extra_dim))
-		
-		return np.hstack([x, x_irrel]), np.hstack([x_next, x_irrel_next])
+		return np.hstack([x, x_irrel])#, np.hstack([x_next, x_irrel_next])
 
 	elif isinstance(x, torch.Tensor):
-		x_irrel= noise_level*torch.randn(x.shape[0],x.shape[1],extra_dim).double()
-		x_irrel_next = noise_level*torch.randn(x.shape[0],x.shape[1],extra_dim).double()
+		x_irrel= noise_level*torch.randn(x.shape[0],x.shape[1],extra_dim).double().to(device)
+		#x_irrel_next = noise_level*torch.randn(x.shape[0],x.shape[1],extra_dim).double()
 		
-		return torch.cat((x, x_irrel),2), torch.cat((x_next, x_irrel_next),2)
-
+		return torch.cat((x, x_irrel),2)#, torch.cat((x_next, x_irrel_next),2)
 
 
 def convert_one_hot(a, dim):

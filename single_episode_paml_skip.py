@@ -26,31 +26,69 @@ from rewardfunctions import *
 import pickle
 
 path = '/home/romina/for_viz/'
-#device = 'cuda' if torch.cuda.is_available() else 'cpu'
-device = 'cpu' # .... much slower with cuda ....
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+#device = 'cpu' # .... much slower with cuda ....
 loss_name = 'paml'
 
 
-MAX_TORQUE = 1.
+MAX_TORQUE = 10.
 # torch.manual_seed(7)
 # np.random.seed(7)
 
 if __name__ == "__main__":
 	#initialize pe 
 	num_random_seeds = 1
-	gen_data = True
+	gen_data = False
 	for rs in range(num_random_seeds):
 		rs = 7
 		torch.manual_seed(rs)
 		np.random.seed(rs)	
 
-		states_dim = 5
+		states_dim = 2
+		extra_dim = 0
+		salient_states_dim = states_dim - extra_dim
 
+		actions_dim = states_dim
+
+		A_all = {}
+
+		A_all[10] = np.array([[0.9 , 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01],
+						       [0.01, 0.2 , 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01],
+						       [0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01],
+						       [0.01, 0.01, 0.01, 0.6 , 0.01, 0.01, 0.01, 0.01, 0.01, 0.01],
+						       [0.01, 0.01, 0.01, 0.01, 0.8 , 0.01, 0.01, 0.01, 0.01, 0.01],
+						       [0.01, 0.01, 0.01, 0.01, 0.01, 0.7 , 0.01, 0.01, 0.01, 0.01],
+						       [0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.1 , 0.01, 0.01, 0.01],
+						       [0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.4 , 0.01, 0.01],
+						       [0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.3 , 0.01],
+						       [0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.5 ]])
+
+		A_all[5] = np.array([[-0.2,  0.1,  0.1,  0.1,  0.1],
+				       		[ 0.1,  0.1,  0.1,  0.1,  0.1],
+				       		[ 0.1,  0.1,  0.5,  0.1,  0.1],
+				       		[ 0.1,  0.1,  0.1,  0.8,  0.1],
+				       		[ 0.1,  0.1,  0.1,  0.1, -0.9]])
+		
+		A_all[4] = np.array([[-0.2,  0.3,  0.3,  0.3],
+				       		[ 0.3, -0.4,  0.3,  0.3],
+				       		[ 0.3,  0.3,  0.3,  0.3],
+				      		[ 0.3,  0.3,  0.3, -0.1]])
+		
+		A_all[3] = np.array([[-0.5, -0.5, -0.5],
+       						[ 0.3, -0.2,  0.3],
+       						[ 0.3,  0.3,  0.4]])
+
+		A_all[2] = np.array([[0.9, 0.4], [-0.4, 0.9]])
+
+		A_all[1] = np.array([0.4])
+
+
+		A_numpy = A_all[salient_states_dim]
 		#next, try 3000 starts, 1 ep for training, and same situation for val
 		num_episodes = 1
-		val_num_episodes = 10
+		val_num_episodes = 100
 		max_actions = 3
-		num_starting_states = 1000
+		num_starting_states = 500
 		val_num_starting_states = 125
 		num_states = max_actions + 1
 		num_iters = 6000
@@ -102,26 +140,23 @@ if __name__ == "__main__":
 		r_d = np.zeros((0))
 
 		continuous_actionspace = True
-		actions_dim = 2
-				
-		extra_dim = states_dim - 2
-
-		salient_states_dim = states_dim - extra_dim
+		
 		errors_name = 'lin_dyn_single_episode_errors_' + loss_name + '_' + str(R_range)
 		env_name = 'lin_dyn'
 		#########################################
 
 		#P_hat = ACPModel(states_dim, actions_dim, clip_output=False)
 		P_hat = DirectEnvModel(states_dim,actions_dim, MAX_TORQUE)
-		init_weights = P_hat.fc1.weight
 		pe = Policy(states_dim, actions_dim, continuous=continuous_actionspace, std=-2.5, max_torque=MAX_TORQUE)
 		
+		# P_hat.load_state_dict(torch.load('paml_trained_lin_dyn_horizon10_traj11_using1states_statesdim2_500starts_1eps.pth', map_location=device))
 		#pe.load_state_dict(torch.load('policy_reinforce_cartpole.pth', map_location=device))
 		#P_hat.load_state_dict(torch.load('trained_mle_300start_1eps_lin_dyn_horizon_3_traj_4_mle_trained_model.pth', map_location=device))
 
+		# P_hat.load_state_dict(torch.load('paml_trained_lin_dyn_horizon3_traj4_using1states_500starts_1eps_10statesdim_multiplier0_1.pth', map_location=device))
 		#P_hat.load_state_dict(torch.load('model_paml_checkpoint_train_True_lin_dyn_horizon3_traj4_using1states.pth', map_location=device))
 		#P_hat.load_state_dict(torch.load('paml_check_point_good_1ep_300start_hor3_traj4.pth', map_location=device))
-		#P_hat.load_state_dict(torch.load('paml_checkpoint_train_Falselin_dyn_horizon_3_traj_4.pth', map_location=device)) 
+		#P_hat.load_state_dict(torch.load('model_paml_checkpoint_train_True_lin_dyn_horizon3_traj4_using1states.pth', map_location=device)) 
 
 		P_hat.to(device).double()
 		pe.to(device).double()
@@ -131,7 +166,7 @@ if __name__ == "__main__":
 
 		opt = optim.SGD(P_hat.parameters(), lr=1e-6, momentum=0.90, nesterov=True)
 		#opt = optim.Adam(P_hat.parameters(), lr=1e-6, weight_decay=1e-8) #increase wd?
-		lr_schedule = torch.optim.lr_scheduler.MultiStepLR(opt, milestones=[1000,3000,5000], gamma=0.1)
+		lr_schedule = torch.optim.lr_scheduler.MultiStepLR(opt, milestones=[3000,5000,6000], gamma=0.1)
 		#1. Gather data, 2. train model with mle 3. reinforce 4. run policy, add new data to data
 
 		#1. Gather data
@@ -189,8 +224,8 @@ if __name__ == "__main__":
 
 		# np.save(os.path.join(path,'log_probs_log_sigma_same_starts_comparison.npy'), sigma_returns_dict)
 
-		fname_training = 'training_{}_statesdim_{}.pickle'.format(rs, states_dim)
-		fname_val = 'val_{}_statesdim_{}.pickle'.format(rs, states_dim)
+		fname_training = 'training_{}_statesdim_{}_traj_{}.pickle'.format(rs, states_dim, max_actions+1)
+		fname_val = 'val_{}_statesdim_{}_traj_{}.pickle'.format(rs, states_dim, max_actions+1)
 		# with open(fname_training, 'rb') as data:
 		# 	pdb.set_trace()
 		# 	dataset = pickle.load(data)
@@ -201,10 +236,11 @@ if __name__ == "__main__":
 		if gen_data:
 		#if True:
 			for ststate in range(num_starting_states):
-				x_0 = 2*np.random.random(size=(2,)) - 0.5
+				x_0 = 2*np.random.random(size=(salient_states_dim,)) - 0.5
 				for ep in range(num_episodes):
-					x_tmp, x_next_tmp, u_list, _, r_list = lin_dyn(max_actions, pe, [], x=x_0, discount=0.0)
-					x_tmp, x_next_tmp = add_irrelevant_features(x_tmp, x_next_tmp, extra_dim)
+					x_tmp, x_next_tmp, u_list, _, r_list = lin_dyn(A_numpy, max_actions, pe, [], x=x_0, extra_dim=extra_dim, discount=0.0)
+					# x_tmp = add_irrelevant_features(x_tmp, extra_dim)
+					# x_next_tmp = add_irrelevant_features(x_next_tmp, extra_dim)
 
 					for x, x_next, u, r in zip(x_tmp, x_next_tmp, u_list, r_list):
 						dataset.push(x, x_next, u, r)
@@ -215,13 +251,14 @@ if __name__ == "__main__":
 
 			#get validation data
 			for ststate in range(val_num_starting_states):
-				x_0 = 2*np.random.random(size = (2,)) - 0.5
+				x_0 = 2*np.random.random(size = (salient_states_dim,)) - 0.5
 				for ep in range(val_num_episodes):
-					x_tmp, x_next_tmp, u_list, r_tmp, _ = lin_dyn(max_actions, pe, [], x=x_0)
+					x_tmp, x_next_tmp, u_list, _, r_list= lin_dyn(A_numpy, max_actions, pe, [], x=x_0, extra_dim=extra_dim,discount=0.0)
 
-					x_tmp, x_next_tmp = add_irrelevant_features(x_tmp, x_next_tmp, extra_dim)
+					# x_tmp = add_irrelevant_features(x_tmp, extra_dim)
+					# x_next_tmp = add_irrelevant_features(x_next_tmp, extra_dim)
 
-					for x, x_next, u, r in zip(x_tmp, x_next_tmp, u_list, r_tmp):
+					for x, x_next, u, r in zip(x_tmp, x_next_tmp, u_list, r_list):
 						validation_dataset.push(x, x_next, u, r)
 
 			with open(fname_val, 'wb') as output:
@@ -275,7 +312,8 @@ if __name__ == "__main__":
 					'use_model' : use_model,
 					'testing_order': testing_order,
 					'policy_states_dim' : salient_states_dim,
-					'end_of_trajectory' : 1
+					'end_of_trajectory' : 1,
+					'A_numpy' : A_numpy
 					}
 
 			reached_R_range = R_range
@@ -316,8 +354,9 @@ if __name__ == "__main__":
 			# print(sum(true_losses)/len(true_losses))
 			#pdb.set_trace()
 
-			kwargs['use_model'] = use_model			
-			for i in range(60):
+			kwargs['use_model'] = use_model	
+			iters = 60 if train else 3
+			for i in range(iters):
 				kwargs['train'] = False
 				kwargs['dataset'] = validation_dataset
 				kwargs['num_starting_states'] = val_num_starting_states
@@ -331,6 +370,8 @@ if __name__ == "__main__":
 				P_hat.paml(pe, **kwargs)
 				#print(val_losses)
 
+				#pdb.set_trace()
+
 				#Train
 				kwargs['train'] = train
 				kwargs['dataset'] = dataset
@@ -342,12 +383,12 @@ if __name__ == "__main__":
 				#kwargs['opt_steps'] = opt_steps if i ==0 else 1
 				reached_R_range = P_hat.paml(pe, **kwargs)
 				#print(losses)
-
+				#pdb.set_trace()
 
 			#np.save(os.path.join(path,loss_name+'testing_order'),np.asarray(testing_order))
 
-			print(sum(losses) / float(len(losses)))
-			print(sum(val_losses) / float(len(val_losses)))
+			#print(sum(losses) / float(len(losses)))
+			#print(sum(val_losses) / float(len(val_losses)))
 
 			# np.save(os.path.join(path,'validation_' + loss_name+'_rs'+str(rs)+'_finalhorizon_'+str(reached_R_range)),np.asarray(val_losses))
 			# np.save(os.path.join(path,loss_name+'_rs'+str(rs)+'_finalhorizon_'+str(reached_R_range)),np.asarray(losses))
@@ -444,7 +485,7 @@ if __name__ == "__main__":
 					val_actions_tensor[v] = torch.tensor([samp.action for samp in val_data[v]]).double()
 
 				val_state_actions = torch.cat((val_states_prev,val_actions_tensor), dim=2)
-				val_loss += P_hat.mle_validation_loss(val_states_next, val_state_actions, pe, final_R_range, use_model=use_model)
+				val_loss += P_hat.mle_validation_loss(A_numpy, val_states_next, val_state_actions, pe, final_R_range, use_model=use_model, salient_dims=salient_states_dim)
 
 			val_loss = val_loss / val_num_starting_states
 			print('MLE loss on mleorpaml-trained model average over validation data: ', val_loss.detach())
@@ -482,10 +523,10 @@ if __name__ == "__main__":
 					val_actions_tensor[v] = torch.tensor([samp.action for samp in val_data[v]]).double()
 
 				val_state_actions = torch.cat((val_states_prev,val_actions_tensor), dim=2)
-				val_loss += P_hat.mle_validation_loss(val_states_next, val_state_actions, pe, final_R_range, use_model=False)
+				val_loss += P_hat.mle_validation_loss(A_numpy, val_states_next, val_state_actions, pe, final_R_range, use_model=False, salient_dims=salient_states_dim)
 
 			val_loss = val_loss / val_num_starting_states
-			print('MLE loss on MLE-trained model average over validation data: ', val_loss.detach())
+			print('MLE loss on true dynamics average over validation data: ', val_loss.detach())
 			########################
 
 

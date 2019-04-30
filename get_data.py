@@ -235,7 +235,7 @@ if __name__=="__main__":
 	P_hat = DirectEnvModel(states_dim,actions_dim, MAX_TORQUE, mult=action_multiplier)#, action_multiplier=0.1)
 	P_hat.double()
 	#P_hat.load_state_dict(torch.load('trained_model_paml_lindyn_horizon5_traj6.pth', map_location=device))
-	#P_hat.load_state_dict(torch.load('1model_paml_checkpoint_train_True_lin_dyn_horizon8_traj9_using1states.pth', map_location=device))
+	P_hat.load_state_dict(torch.load('1model_paml_checkpoint_train_True_lin_dyn_horizon8_traj9_using1states.pth', map_location=device))
 
 	opt = optim.SGD(P_hat.parameters(), lr=1e-5, momentum=0.90, nesterov=True)
 	#opt = optim.Adam(P_hat.parameters(), lr=1e-5, weight_decay=1e-8)

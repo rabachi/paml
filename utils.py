@@ -17,11 +17,12 @@ import pdb
 from scipy import linalg
 
 
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
-#device = 'cpu'
+#device = 'cuda' if torch.cuda.is_available() else 'cpu'
+device = 'cpu'
 
 def discount_rewards(list_of_rewards, discount, center=True, batch_wise=False):
 	if isinstance(list_of_rewards, list) or isinstance(list_of_rewards, np.ndarray):
+		list_of_rewards = np.asarray(list_of_rewards, dtype=np.float32)
 		r = np.zeros_like(list_of_rewards)
 
 		for i in range(len(list_of_rewards)):
@@ -176,20 +177,74 @@ def roll_left(x, n):
 	return torch.cat((x[n:], x[:n]))
 
 
+def calc_actual_state_values(target_critic, rewards, states, actions, discount):
+	R = []
+	rewards.reverse()
+
+	# # If we happen to end the set on a terminal state, set next return to zero
+	# if dones[-1] == True: next_return = 0
+	    
+	# If not terminal state, bootstrap v(s) using our critic
+	# TODO: don't need to estimate again, just take from last value of v(s) estimates
+	s = torch.from_numpy(states[-1]).double().unsqueeze(0)
+	a = torch.from_numpy(actions[-1]).double().unsqueeze(0)
+	next_return = target_critic(torch.cat((s,a),dim=1)).data[0][0]
+
+	# Backup from last state to calculate "true" returns for each state in the set
+	R.append(next_return)
+	# dones.reverse()
+	for r in range(1, len(rewards)):
+		# if not dones[r]: this_return = rewards[r] + next_return * discount
+		this_return = rewards[r] + next_return * discount
+		# else: this_return = 0
+		R.append(this_return)
+		next_return = this_return
+
+	R.reverse()
+	state_values_true = torch.DoubleTensor(R).unsqueeze(1)
+
+	return state_values_true
+
+
+def compute_returns(self, obs, action, reward, next_obs, done):  # pylint: disable=unused-argument
+	with torch.no_grad():
+		values, dist = self.ac_net(obs)
+		if not done[-1]:
+			next_value, _ = self.ac_net(next_obs[-1:])
+			values = torch.cat([values, next_value], dim=0)
+		else:
+			values = torch.cat([values, values.new_tensor(np.zeros((1, 1)))], dim=0)
+
+		returns = reward.new_tensor(np.zeros((len(reward), 1)))
+		gae = 0.0
+		for step in reversed(range(len(reward))):
+			delta = reward[step] + self.gamma * values[step + 1] - values[step]
+			gae = delta + self.gamma * self.lmbda * gae
+			returns[step] = gae + values[step]
+
+		values = values[:-1]  # remove the added step to compute returns
+
+	return returns, log_probs, values
+
 
 def get_selected_log_probabilities(policy_estimator, states_tensor, actions_tensor):#, batch_actions):
-	action_probs = policy_estimator(states_tensor)
 
+	action_probs = policy_estimator.get_action_probs(states_tensor)
 	if not policy_estimator.continuous:
-		log_probs = torch.log(torch.clamp(action_probs[0],min=1e-5))
-		if ((log_probs < -100).any()):
-			pdb.set_trace()
-
-		selected_log_probs = torch.index_select(log_probs, 1, actions_tensor)[range(len(actions_tensor)), range(len(actions_tensor))]
+		c = Categorical(action_probs[0])
+		selected_log_probs = c.log_prob(actions_tensor)
+		
+		# log_probs = torch.log(torch.clamp(action_probs[0],min=1e-5))
+		# if ((log_probs < -100).any()):
+		# 	pdb.set_trace()
+		# selected_log_probs = log_probs.view(-1,2).gather(1, actions_tensor.view(-1,1))
+		# selected_log_probs = torch.index_select(log_probs, 1, actions_tensor)[range(len(actions_tensor)), range(len(actions_tensor))]
 	else:
 		n = Normal(*action_probs)
 		selected_log_probs = n.log_prob(actions_tensor)
-	return selected_log_probs
+		#entropies = n.entropy()
+
+	return selected_log_probs#, entropies
 
 
 #################### IGNORE BELOW ##############################

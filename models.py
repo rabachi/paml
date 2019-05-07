@@ -17,7 +17,8 @@ import random
 import os
 
 
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
+# device = 'cuda' if torch.cuda.is_available() else 'cpu'
+device = 'cpu'
 
 class DirectEnvModel(torch.nn.Module):
 	def __init__(self, states_dim, N_ACTIONS, MAX_TORQUE, mult=0.1):
@@ -80,7 +81,7 @@ class DirectEnvModel(torch.nn.Module):
 		else:
 			x_t_1  = torch.einsum('jik,ljk->lji',[A,x0[:,:,:policy_states_dim]])
 			x_t_1 = add_irrelevant_features(x_t_1, states_dim-policy_states_dim, noise_level = 0.4)
-			x_t_1 = x_t_1 + a0
+			x_t_1 = x_t_1 + 0.5*a0
 
 		x_list = [x0, x_t_1]
 
@@ -105,7 +106,7 @@ class DirectEnvModel(torch.nn.Module):
 			else:
 				x_next  = torch.einsum('jik,ljk->lji',[A,state_action[:,:,:policy_states_dim]])
 				x_next = add_irrelevant_features(x_next, states_dim-policy_states_dim, noise_level = 0.4)
-				x_next = x_next + state_action[:,:,states_dim:]
+				x_next = x_next + 0.5*state_action[:,:,states_dim:]
 
 			#action_taken = state_action[:,:,states_dim:]
 			with torch.no_grad():
@@ -476,8 +477,8 @@ class DirectEnvModel(torch.nn.Module):
 			
 		return squared_errors.mean()
 	
-	def train_mle(self, pe, state_actions, states_next, epochs, max_actions, R_range, opt, env_name, continuous_actionspace, losses):
-		states_dim = 5
+	def train_mle(self, pe, state_actions, states_next, epochs, max_actions, R_range, opt, env_name, continuous_actionspace, losses, verbose=20):
+		states_dim = 2
 		salient_dims = 2
 		for i in range(epochs):
 			opt.zero_grad()
@@ -493,13 +494,14 @@ class DirectEnvModel(torch.nn.Module):
 				#rolled_out_states_sums += shift_down(next_step_state,step, max_actions)
 
 				shortened = next_step_state[:,:-1,:]
-				a = pe.sample_action(torch.DoubleTensor(shortened[:,:,:states_dims]))	
+				a = pe.sample_action(torch.DoubleTensor(shortened[:,:,:states_dim]))	
 				step_state = torch.cat((shortened,a),dim=2)
 
 			#state_loss = torch.mean(squared_errors)#torch.mean((states_next - rolled_out_states_sums)**2)
 
 			model_loss = torch.mean(squared_errors) #+ reward_loss)# + done_loss)
-			print("R_range: {}, negloglik  = {:.7f}".format(R_range, model_loss.data.cpu()))
+			if i % verbose == 0:
+				print("R_range: {}, negloglik  = {:.7f}".format(R_range, model_loss.data.cpu()))
 
 			model_loss.backward()
 			opt.step()

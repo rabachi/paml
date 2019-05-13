@@ -34,11 +34,11 @@ def get_reward_fn(env, states_tensor, actions_tensor):
 			pdb.set_trace()
 
 		#u = torch.clamp(actions_tensor, min=-MAX_TORQUE, max=MAX_TORQUE).squeeze()
-		u = actions_tensor.squeeze()
+		u = actions_tensor.squeeze().unsqueeze(1)
 
 		costs = angle_normalize(th)**2 + .1*thdot**2 + .001*(u**2)
 
-		return -costs.unsqueeze(2)
+		return -costs#.unsqueeze(2)
 
 	elif env.spec.id == 'CartPole-v0':
 		theta_threshold_radians = 12 * 2 * np.pi / 360

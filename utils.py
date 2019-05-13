@@ -15,7 +15,8 @@ from rewardfunctions import *
 import pdb
 
 from scipy import linalg
-
+from networks import *
+from models import *
 
 #device = 'cuda' if torch.cuda.is_available() else 'cpu'
 device = 'cpu'
@@ -47,6 +48,65 @@ def discount_rewards(list_of_rewards, discount, center=True, batch_wise=False):
 			return (r - torch.mean(list_of_rewards))/(torch.std(list_of_rewards) + 1e-5)
 		else:
 			return r
+
+#very stupidly written function, too lazy for now to make better 
+def generate_data(env, dataset, actor, train_starting_states, val_starting_states, max_actions,noise, epsilon, epsilon_decay, discount=0.995):
+	# dataset = ReplayMemory(1000000)
+	all_rewards = []
+	for ep in range(train_starting_states):
+		state = env.reset()
+		states = [state]
+		actions = []
+		rewards = []
+
+		for timestep in range(max_actions):
+			# epsilon -= epsilon_decay
+			with torch.no_grad():
+				action = actor.sample_action(torch.DoubleTensor(state)).detach().numpy()
+				action += noise()*max(0, epsilon) #try without noise
+				action = np.clip(action, -1., 1.)
+
+			state_prime, reward, done, _ = env.step(action)
+
+			actions.append(action)
+			states.append(state_prime)
+			rewards.append(reward)
+
+			dataset.push(state, state_prime, action, reward)
+			state = state_prime
+		#returns = discount_rewards(rewards, discount, center=True, batch_wise=False)
+
+		# for x, x_next, u, r, ret in zip(states[:-1], states[1:], actions, rewards, returns):
+		# 	dataset.push(x, x_next, u, r, ret)
+
+		all_rewards.append(sum(rewards))
+	print('Average rewards on true dynamics: {:.3f}'.format(sum(all_rewards)/len(all_rewards)))
+
+	val_dataset = None
+	if val_starting_states is not None:
+		val_dataset = ReplayMemory(100000)
+		for ep in range(val_starting_states):
+			state = env.reset()
+			states = [state]
+			actions = []
+			rewards = []
+
+			for timestep in range(max_actions):
+				with torch.no_grad():
+					action = actor.sample_action(torch.DoubleTensor(state)).detach().numpy()
+					#action += noise()*max(0, epsilon) #try without noise
+					#action = np.clip(action, -1., 1.)
+				state_prime, reward, done, _ = env.step(action)
+
+				actions.append(action)
+				states.append(state_prime)
+				rewards.append(reward)
+
+				val_dataset.push(state, state_prime, action, reward)
+
+				state = state_prime
+
+	return dataset, val_dataset, epsilon
 
 
 def lin_dyn(A, steps, policy, all_rewards, x=None, extra_dim=0, discount=0.9):
@@ -186,8 +246,10 @@ def calc_actual_state_values(target_critic, rewards, states, actions, discount):
 	    
 	# If not terminal state, bootstrap v(s) using our critic
 	# TODO: don't need to estimate again, just take from last value of v(s) estimates
-	s = torch.from_numpy(states[-1]).double().unsqueeze(0)
-	a = torch.from_numpy(actions[-1]).double().unsqueeze(0)
+	# s = torch.from_numpy(states[-1]).double().unsqueeze(0)
+	# a = torch.from_numpy(actions[-1]).double().unsqueeze(0)
+	s= states
+	a = actions
 	next_return = target_critic(torch.cat((s,a),dim=1)).data[0][0]
 
 	# Backup from last state to calculate "true" returns for each state in the set
@@ -195,7 +257,7 @@ def calc_actual_state_values(target_critic, rewards, states, actions, discount):
 	# dones.reverse()
 	for r in range(1, len(rewards)):
 		# if not dones[r]: this_return = rewards[r] + next_return * discount
-		this_return = rewards[r] + next_return * discount
+		this_return = torch.from_numpy(rewards[r]) + next_return * discount
 		# else: this_return = 0
 		R.append(this_return)
 		next_return = this_return

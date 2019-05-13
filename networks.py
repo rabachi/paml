@@ -139,6 +139,7 @@ class Policy(nn.Module):
 		if self.continuous:
 			mu = nn.Tanh()(self.action_head(self.forward(x)))*self.max_torque
 			sigma_sq = F.softplus(self.log_std(self.forward(x)))
+			self.sigma_sq = sigma_sq.mean().detach()
 			# sigma_sq = self.log_std.exp().expand_as(mu)
 
 			return (mu,sigma_sq)
@@ -146,39 +147,124 @@ class Policy(nn.Module):
 			return (nn.Softmax(dim=-1)(self.action_head(self.forward(x))),0)
 
 
-class Value(nn.Module):
-	def __init__(self, states_dim, actions_dim):
-		super(Value, self).__init__()
-		self.lin1 = nn.Linear(states_dim+actions_dim, 64)
+class DeterministicPolicy(nn.Module):
+	def __init__(self, in_dim, out_dim, max_action):#-0.8 GOOD
+		super(DeterministicPolicy, self).__init__()
+		self.n_actions = out_dim
+		self.max_action = max_action
+
+		self.lin1 = nn.Linear(in_dim, 64)
 		self.relu = nn.ReLU()
-		self.theta = nn.Linear(64, 1)
+
+		self.theta = nn.Linear(64, 64)
+		self.action_head = nn.Linear(64,out_dim)
 
 		torch.nn.init.xavier_uniform_(self.lin1.weight)
 		torch.nn.init.xavier_uniform_(self.theta.weight)
 
 	def forward(self, x):
 		x = self.relu(self.lin1(x))
-		values = self.theta(x)
+		x = self.relu(self.theta(x))
+		x = nn.Tanh()(self.action_head(x))
+		return x
+
+	def sample_action(self, x):
+		action = self.forward(x) * self.max_action
+		return action
+
+
+class Value(nn.Module):
+	def __init__(self, states_dim, actions_dim):
+		super(Value, self).__init__()
+		self.lin1 = nn.Linear(states_dim+actions_dim, 64)
+		self.lin2 = nn.Linear(64, 64)
+		self.relu = nn.ReLU()
+		self.theta = nn.Linear(64, 1)
+
+		torch.nn.init.xavier_uniform_(self.lin1.weight)
+		torch.nn.init.xavier_uniform_(self.lin2.weight)
+		torch.nn.init.xavier_uniform_(self.theta.weight)
+
+	def forward(self, x, u):
+		xu = torch.cat([x, u], 1)
+
+		x = self.relu(self.lin1(xu))
+		values = self.theta(self.relu(self.lin2(x)))
 		return values
 
 
+class Actor(nn.Module):
+	def __init__(self, state_dim, action_dim, max_action):
+		super(Actor, self).__init__()
+
+		self.l1 = nn.Linear(state_dim, 64)
+		self.l2 = nn.Linear(64, 64)
+		self.l3 = nn.Linear(64, action_dim)
+		
+		self.max_action = max_action
+
+
+	def forward(self, x):
+		x = F.relu(self.l1(x))
+		x = F.relu(self.l2(x))
+		x = self.max_action * torch.tanh(self.l3(x)) 
+		return x
+
+
+class Critic(nn.Module):
+	def __init__(self, state_dim, action_dim):
+		super(Critic, self).__init__()
+
+		# Q1 architecture
+		self.l1 = nn.Linear(state_dim + action_dim, 64)
+		self.l2 = nn.Linear(64, 64)
+		self.l3 = nn.Linear(64, 1)
+
+		# Q2 architecture
+		self.l4 = nn.Linear(state_dim + action_dim, 64)
+		self.l5 = nn.Linear(64, 64)
+		self.l6 = nn.Linear(64, 1)
+
+
+	def forward(self, x, u):
+		xu = torch.cat([x, u], 1)
+
+		x1 = F.relu(self.l1(xu))
+		x1 = F.relu(self.l2(x1))
+		x1 = self.l3(x1)
+
+		x2 = F.relu(self.l4(xu))
+		x2 = F.relu(self.l5(x2))
+		x2 = self.l6(x2)
+		return x1, x2
+
+
+	def Q1(self, x, u):
+		xu = torch.cat([x, u], 1)
+
+		x1 = F.relu(self.l1(xu))
+		x1 = F.relu(self.l2(x1))
+		x1 = self.l3(x1)
+		return x1 
+
+
 class OrnsteinUhlenbeckActionNoise:
-    def __init__(self, mu=0, sigma=0.2, theta=.15, dt=1e-2, x0=None):
-        self.theta = theta
-        self.mu = mu
-        self.sigma = sigma
-        self.dt = dt
-        self.x0 = x0
-        self.reset()
+	def __init__(self, mu=0, sigma=0.2, theta=.15, dt=1e-2, x0=None):
+		self.theta = theta
+		self.mu = mu
+		self.sigma = sigma
+		self.dt = dt
+		self.x0 = x0
+		self.reset()
 
-    def __call__(self):
-        x = self.x_prev + self.theta * (self.mu - self.x_prev) * self.dt + self.sigma * np.sqrt(self.dt) * np.random.normal(size=self.mu.shape)
-        self.x_prev = x
-        return x
+	def __call__(self):
+		x = self.x_prev + self.theta * (self.mu - self.x_prev) * self.dt + self.sigma * np.sqrt(self.dt) * np.random.normal(size=self.mu.shape)
+		self.x_prev = x
+		return x
 
-    def reset(self):
-        self.x_prev = self.x0 if self.x0 is not None else np.zeros_like(self.mu)
+	def reset(self):
+		self.x_prev = self.x0 if self.x0 is not None else np.zeros_like(self.mu)
 
-    def __repr__(self):
-        return 'OrnsteinUhlenbeckActionNoise(mu={}, sigma={})'.format(self.mu, self.sigma)
+	def __repr__(self):
+		return 'OrnsteinUhlenbeckActionNoise(mu={}, sigma={})'.format(self.mu, self.sigma)
 

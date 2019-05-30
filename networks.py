@@ -92,31 +92,41 @@ class ReplayMemory(object):
 
 
 class Policy(nn.Module):
-	def __init__(self, in_dim, out_dim, continuous=False, std=-0.8, max_torque=1.):#-0.8 GOOD
+	def __init__(self, in_dim, out_dim, continuous=False, std=-0.8, max_torque=1., small=False):#-0.8 GOOD
 		super(Policy, self).__init__()
 		self.n_actions = out_dim
 		self.continuous = continuous
 		self.max_torque = max_torque
-		self.lin1 = nn.Linear(in_dim, 64)
-		self.relu = nn.ReLU()
-		#self.lin2 = nn.Linear(32, 16)
-		#self.theta = nn.Linear(4, out_dim)
-		self.theta = nn.Linear(64, 64)
+		self.small = small
+		if not small:
+			self.lin1 = nn.Linear(in_dim, 64)
+			self.relu = nn.ReLU()
+			#self.lin2 = nn.Linear(32, 16)
+			#self.theta = nn.Linear(4, out_dim)
+			self.theta = nn.Linear(64, 64)
 
-		#self.value_head = nn.Linear(64, 1)
-		self.action_head = nn.Linear(64,out_dim)
+			#self.value_head = nn.Linear(64, 1)
+			self.action_head = nn.Linear(64,out_dim)
+			torch.nn.init.xavier_uniform_(self.theta.weight)
+		else:
+			self.lin1 = nn.Linear(in_dim, 8)
+			self.relu = nn.ReLU()
+			self.action_head = nn.Linear(8,out_dim)
 
 		torch.nn.init.xavier_uniform_(self.lin1.weight)
-		torch.nn.init.xavier_uniform_(self.theta.weight)
-
+		
 		if continuous:
-			self.log_std = nn.Linear(64, out_dim)
+			if not small:
+				self.log_std = nn.Linear(64, out_dim)
+			else:
+				self.log_std = nn.Linear(8, out_dim)
 			# self.log_std = nn.Parameter(torch.ones(out_dim) * std, requires_grad=True)
 			#self.log_std = (torch.ones(out_dim) * std).type(torch.DoubleTensor)
 
 	def forward(self, x):
 		x = self.relu(self.lin1(x))
-		x = self.relu(self.theta(x))
+		if not self.small:
+			x = self.relu(self.theta(x))
 		return x
 
 	def sample_action(self, x):
@@ -138,8 +148,8 @@ class Policy(nn.Module):
 	def get_action_probs(self, x):
 		if self.continuous:
 			mu = nn.Tanh()(self.action_head(self.forward(x)))*self.max_torque
-			sigma_sq = F.softplus(self.log_std(self.forward(x)))
-			self.sigma_sq = sigma_sq.mean().detach()
+			sigma_sq = F.softplus(self.log_std(self.forward(x))) + 0.1
+			self.sigma_sq = sigma_sq.mean(dim=0).detach()
 			# sigma_sq = self.log_std.exp().expand_as(mu)
 
 			return (mu,sigma_sq)

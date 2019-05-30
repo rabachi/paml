@@ -50,9 +50,8 @@ def discount_rewards(list_of_rewards, discount, center=True, batch_wise=False):
 			return r
 
 #very stupidly written function, too lazy for now to make better 
-def generate_data(env, dataset, actor, train_starting_states, val_starting_states, max_actions,noise, epsilon, epsilon_decay, discount=0.995):
+def generate_data(env, dataset, actor, train_starting_states, val_starting_states, max_actions,noise, epsilon, epsilon_decay, discount=0.995, all_rewards=[]):
 	# dataset = ReplayMemory(1000000)
-	all_rewards = []
 	for ep in range(train_starting_states):
 		state = env.reset()
 		states = [state]

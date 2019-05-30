@@ -15,46 +15,51 @@ from utils import *
 from collections import namedtuple
 import random
 import os
-from get_data import *
+# from get_data import *
 
 
 # device = 'cuda' if torch.cuda.is_available() else 'cpu'
 device = 'cpu'
 
 class DirectEnvModel(torch.nn.Module):
-	def __init__(self, states_dim, N_ACTIONS, MAX_TORQUE, mult=0.1):
+	def __init__(self, states_dim, N_ACTIONS, MAX_TORQUE, mult=0.1, small=False):
 		super(DirectEnvModel, self).__init__()
 		# build network layers
 		self.states_dim = states_dim
 		self.n_actions = N_ACTIONS
 		self.max_torque = MAX_TORQUE
 		self.mult = mult
-		self.fc1 = nn.Linear(states_dim + N_ACTIONS, 64)
-		self.fc2 = nn.Linear(64, 64)
-		# self.fc3 = nn.Linear(64, 32)
+		self.small = small
 
-		self._enc_mu = torch.nn.Linear(64, states_dim)
+		if not small:
+			self.fc1 = nn.Linear(states_dim + N_ACTIONS, 64)
+			self.fc2 = nn.Linear(64, 64)
+			self._enc_mu = torch.nn.Linear(64, states_dim)
+			torch.nn.init.xavier_uniform_(self.fc1.weight)
+			torch.nn.init.xavier_uniform_(self.fc2.weight)
+			torch.nn.init.xavier_uniform_(self._enc_mu.weight)
 
-		# initialize layers
-		torch.nn.init.xavier_uniform_(self.fc1.weight)
-		torch.nn.init.xavier_uniform_(self.fc2.weight)
-
-		torch.nn.init.xavier_uniform_(self._enc_mu.weight)
+		else:
+			self.fc1 = nn.Linear(states_dim + N_ACTIONS, 4)
+			self._enc_mu = torch.nn.Linear(4, states_dim)
+			torch.nn.init.xavier_uniform_(self.fc1.weight)
+			torch.nn.init.xavier_uniform_(self._enc_mu.weight)
 
 
 	def forward(self, x):
 		x = self.fc1(x)
 		x = nn.ReLU()(x)
-		x = self.fc2(x)
-		x = nn.ReLU()(x)
-		# x = self.fc3(x)
-		# x = nn.ReLU()(x)
+		if not self.small:
+			x = self.fc2(x)
+			x = nn.ReLU()(x)
+			# x = self.fc3(x)
+			# x = nn.ReLU()(x)
 
 		mu = nn.Tanh()(self._enc_mu(x)) * 8.0#* 3.0
 		return mu
 
 
-	def unroll(self, state_action, policy, states_dim, A_numpy, steps_to_unroll=2, continuous_actionspace=True, use_model=True, policy_states_dim=2, noise=None, epsilon=None, epsilon_decay=None,env='lin_dyn'):
+	def unroll(self, state_action, policy, states_dim, A_numpy, steps_to_unroll=2, continuous_actionspace=True, use_model=True, policy_states_dim=2, salient_states_dim=2, noise=None, epsilon=None, epsilon_decay=None,env='lin_dyn'):
 		if state_action is None:
 			return -1	
 		batch_size = state_action.shape[0]
@@ -68,6 +73,13 @@ class DirectEnvModel(torch.nn.Module):
 					A_numpy,
 					(state_action[0,:,0].shape[0],1,1) #repeat along trajectory size, for every state
 					)
+				).to(device)
+			extra_dim = states_dim - salient_states_dim
+			B = torch.from_numpy(
+				np.block([
+						 [0.1*np.eye(salient_states_dim),            np.zeros((salient_states_dim, extra_dim))],
+						 [np.zeros((extra_dim, salient_states_dim)), np.zeros((extra_dim,extra_dim))          ]
+						])
 				).to(device)
 		elif A_numpy is None and not use_model:
 			raise NotImplementedError
@@ -87,7 +99,7 @@ class DirectEnvModel(torch.nn.Module):
 		else:
 			x_t_1  = torch.einsum('jik,ljk->lji',[A,x0[:,:,:policy_states_dim]])
 			x_t_1 = add_irrelevant_features(x_t_1, states_dim-policy_states_dim, noise_level = 0.4)
-			x_t_1 = x_t_1 + 0.5*a0
+			x_t_1 = x_t_1 + 0.1*a0#torch.einsum('ijk,kk->ijk',[a0,B])
 
 		x_list = [x0, x_t_1]
 
@@ -117,7 +129,7 @@ class DirectEnvModel(torch.nn.Module):
 			else:
 				x_next  = torch.einsum('jik,ljk->lji',[A,state_action[:,:,:policy_states_dim]])
 				x_next = add_irrelevant_features(x_next, states_dim-policy_states_dim, noise_level = 0.4)
-				x_next = x_next + 0.5*state_action[:,:,states_dim:]
+				x_next = x_next + 0.1*state_action[:,:,states_dim:]#torch.einsum('ijk,kk->ijk',[state_action[:,:,states_dim:],B])#0.1*state_action[:,:,states_dim:]
 
 			#action_taken = state_action[:,:,states_dim:]
 			with torch.no_grad():
@@ -494,9 +506,8 @@ class DirectEnvModel(torch.nn.Module):
 			
 		return squared_errors.mean()
 	
-	def train_mle(self, pe, state_actions, states_next, epochs, max_actions, R_range, opt, env_name, continuous_actionspace, losses, verbose=20):
-		states_dim = 2
-		salient_dims = 2
+	def train_mle(self, pe, state_actions, states_next, epochs, max_actions, R_range, opt, env_name, losses, states_dim, salient_states_dim, verbose=10):
+
 		for i in range(epochs):
 			opt.zero_grad()
 
@@ -508,17 +519,13 @@ class DirectEnvModel(torch.nn.Module):
 
 				squared_errors += F.pad(input=(states_next[:,step:,:] - next_step_state)**2, pad=(0,0,step,0,0,0), mode='constant', value=0)
 
-				#rolled_out_states_sums += shift_down(next_step_state,step, max_actions)
-
 				shortened = next_step_state[:,:-1,:]
 				a = pe.sample_action(torch.DoubleTensor(shortened[:,:,:states_dim]))	
 				step_state = torch.cat((shortened,a),dim=2)
 
-			#state_loss = torch.mean(squared_errors)#torch.mean((states_next - rolled_out_states_sums)**2)
-
 			model_loss = torch.mean(squared_errors) #+ reward_loss)# + done_loss)
 			if i % verbose == 0:
-				print("R_range: {}, negloglik  = {:.7f}".format(R_range, model_loss.data.cpu()))
+				print("Epoch: {}, negloglik  = {:.7f}".format(i, model_loss.data.cpu()))
 
 			model_loss.backward()
 			opt.step()
@@ -526,9 +533,9 @@ class DirectEnvModel(torch.nn.Module):
 		return model_loss
 
 	def general_train_mle(self, pe, dataset, epochs, max_actions, opt, env_name, losses, batch_size, noise, epsilon, verbose=20):
-		states_dim = 3
+		states_dim = 2
 		salient_dims = states_dim
-		actions_dim = 1
+		actions_dim = 2
 
 		for i in range(epochs):
 			#sample from dataset 
@@ -543,8 +550,8 @@ class DirectEnvModel(torch.nn.Module):
 			squared_errors = (states_next - model_next_state)**2
 
 			# try:
-			save_stats(None, states_next, actions_tensor, states_prev, prefix='true_MLE_training_')
-			save_stats(None, model_next_state, actions_tensor, states_prev, prefix='model_MLE_training_')
+			# save_stats(None, states_next, actions_tensor, states_prev, prefix='true_MLE_training_')
+			# save_stats(None, model_next_state, actions_tensor, states_prev, prefix='model_MLE_training_')
 			# except KeyboardInterrupt:
 			# 	print("W: interrupt received, stopping…")
 			# 	sys.exit(0)

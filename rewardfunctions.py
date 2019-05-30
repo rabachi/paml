@@ -14,7 +14,7 @@ MAX_TORQUE = 2.
 _DEFAULT_VALUE_AT_MARGIN = 0.1
 
 def get_reward_fn(env, states_tensor, actions_tensor):
-	if env == 'lin_dyn':
+	if (env == 'lin_dyn') or (env.spec.id == 'lin-dyn-v0'):
 		#set actions multiplier to 0 to try with reinforce
 		rewards = -(torch.einsum('ijk,ijk->ij', [states_tensor, states_tensor]) + torch.einsum('ijk,ijk->ij', [actions_tensor, actions_tensor]))
 		#rewards = torch.clamp(states_tensor[:,0]**2, min=0., max=1.0)

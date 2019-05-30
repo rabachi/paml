@@ -14,13 +14,14 @@ import os
 from models import *
 from networks import *
 from utils import *
-from get_data import save_stats
+# from get_data import save_stats
 
 # import dm_control2gym
 device = 'cpu'
 
-def pre_train_critic(actor, critic, dataset, epochs_value, discount, batch_size, q_optimizer, value_lr_schedule, max_actions, states_dim, actions_dim, verbose):
+def pre_train_critic(actor, critic, dataset, epochs_value, discount, batch_size, q_optimizer, value_lr_schedule, max_actions, states_dim, actions_dim, verbose=10):
 	MSE = nn.MSELoss()
+	# TAU=0.001
 	TAU=0.001
 	target_critic = Value(states_dim, actions_dim).double()
 
@@ -29,7 +30,6 @@ def pre_train_critic(actor, critic, dataset, epochs_value, discount, batch_size,
 
 	for i in range(epochs_value):
 		batch = dataset.sample(batch_size)
-
 		states_prev = torch.tensor([samp.state for samp in batch]).double().to(device)
 		states_next = torch.tensor([samp.next_state for samp in batch]).double().to(device)
 		rewards_tensor = torch.tensor([samp.reward for samp in batch]).double().to(device).unsqueeze(1)
@@ -43,7 +43,9 @@ def pre_train_critic(actor, critic, dataset, epochs_value, discount, batch_size,
 		q_optimizer.zero_grad()
 		loss = MSE(y, q)
 		loss.backward()
+		nn.utils.clip_grad_value_(critic.parameters(), 20.0)
 		q_optimizer.step()
+		value_lr_schedule.step()
 
 		#soft update the target critic
 		for target_param, param in zip(target_critic.parameters(), critic.parameters()):
@@ -156,27 +158,33 @@ def actor_critic_paml_train(
 							opt, 
 							num_episodes, 
 							num_starting_states, 
+							batch_size,
 							states_dim, 
 							actions_dim, 
 							use_model, 
 							discount, 
 							max_actions, 
 							train, 
-							lr_schedule,
+							lr,
 							num_iters,
 							losses,
 							dataset,
-							verbose
+							verbose,
+							save_checkpoints,
+							file_location,
+							file_id
 							):
 	best_loss = 15000
 	env_name = env.spec.id
-	batch_size = num_episodes*num_starting_states*64
+	# batch_size = 64
 	R_range = 1
 	unroll_num = max_actions
 	end_of_trajectory = 1
 	num_iters = num_iters if train else 1
 	MSE = nn.MSELoss()
 	noise = OrnsteinUhlenbeckActionNoise(mu=np.zeros(actions_dim))	
+	model_opt = optim.SGD(P_hat.parameters(), lr=lr)#, momentum=0.90, nesterov=True)
+
 	epsilon = 1
 	epsilon_decay = 1./100000
 	ell = 0
@@ -235,15 +243,18 @@ def actor_critic_paml_train(
 		for g in range(len(model_pe_grads_split)):
 			model_pe_grads = torch.cat((model_pe_grads,model_pe_grads_split[g].view(-1)))
 
-		cos = nn.CosineSimilarity(dim=0, eps=1e-6)
-		loss = 1-cos(true_pe_grads,model_pe_grads)
+		# cos = nn.CosineSimilarity(dim=0, eps=1e-6)
+		# loss = 1-cos(true_pe_grads,model_pe_grads)
 		
-		# loss = MSE(true_pe_grads, model_pe_grads)
+		loss = torch.sqrt((true_pe_grads-model_pe_grads).pow(2).sum())#/num_starting_states)
+
 
 		if loss.detach().cpu() < best_loss and use_model:
 			#Save model and losses so far
-			torch.save(P_hat.state_dict(), 'act_model_paml_checkpoint_train_{}_{}_horizon{}_traj{}_using{}states.pth'.format(train, env_name, R_range, max_actions + 1, end_of_trajectory))
-			np.save('act_loss_paml_checkpoint_train_{}_{}_horizon{}_traj{}_using{}states'.format(train, env_name, R_range, max_actions + 1, end_of_trajectory), np.asarray(losses))
+			#if save_checkpoints:
+			torch.save(P_hat.state_dict(), os.path.join(file_location,'act_model_paml_checkpoint_train_{}_{}_horizon{}_traj{}_{}.pth'.format(train, env_name, R_range, max_actions + 1, file_id)))
+			if save_checkpoints:
+				np.save(os.path.join(file_location,'act_loss_paml_checkpoint_train_{}_{}_horizon{}_traj{}_{}'.format(train, env_name, R_range, max_actions + 1, file_id)), np.asarray(losses))
 
 			best_loss = loss.detach().cpu()
 
@@ -260,7 +271,7 @@ def actor_critic_paml_train(
 				pdb.set_trace()
 
 		losses.append(loss.data.cpu())
-		lr_schedule.step()
+		# lr_schedule.step()
 
 		if train and i < 1: #and j < 1 
 			initial_loss = losses[0]#.data.cpu()
@@ -268,15 +279,19 @@ def actor_critic_paml_train(
 
 		if train:
 			if (i % verbose == 0) or (i == num_iters - 1):
-				print("R_range: {:3d} | batch_num: {:5d} | paml_loss: {:.5f}".format(R_range, i, loss.data.cpu()))
+				print("LR: {:.5f} | batch_num: {:5d} | critic ex val: {:.3f} | paml_loss: {:.5f}".format(lr, i, true_policy_loss.mean().data.cpu(), loss.data.cpu()))
 		else: 
 			print("-----------------------------------------------------------------------------------------------------")
 			print("Validation loss model: {} | R_range: {:3d} | batch_num: {:5d} | average validation paml_loss = {:.7f}".format(use_model, R_range, i, loss.data.cpu()))
 			print("-----------------------------------------------------------------------------------------------------")
-	return P_hat
+	
+	if train:
+		P_hat.load_state_dict(torch.load(os.path.join(file_location,'act_model_paml_checkpoint_train_{}_{}_horizon{}_traj{}_{}.pth'.format(train, env_name, R_range, max_actions + 1, file_id)), map_location=device))
+
+	return P_hat, loss.data.cpu()
 
 
-def actor_critic_DDPG(env, actor, critic, real_dataset, num_starting_states, max_actions, states_dim, discount, use_model, train, verbose, all_rewards, epsilon, P_hat=None):
+def actor_critic_DDPG(env, actor, critic, real_dataset, batch_size, num_starting_states, max_actions, states_dim, discount, use_model, train, verbose, all_rewards, epsilon, value_lr_schedule, P_hat=None, model_type='paml'):
  
 	starting_states = num_starting_states
 	env_name = env.spec.id
@@ -284,7 +299,7 @@ def actor_critic_DDPG(env, actor, critic, real_dataset, num_starting_states, max
 
 	#rho = fraction of data used from experience replay
 	rho_ER = 0.5
-	random_start_frac = 0.9
+	random_start_frac = 0.7
 
 	actions_dim = env.action_space.shape[0]
 
@@ -294,6 +309,9 @@ def actor_critic_DDPG(env, actor, critic, real_dataset, num_starting_states, max
 	LRA=0.0001      #LEARNING RATE ACTOR
 	LRC=0.001       #LEARNING RATE CRITIC
 
+	# LRA=1e-6      #LEARNING RATE ACTOR
+	# LRC=1e-5       #LEARNING RATE CRITIC
+
 	buffer_start = 100
 	# epsilon = 1
 	epsilon_decay = 1./100000
@@ -301,7 +319,7 @@ def actor_critic_DDPG(env, actor, critic, real_dataset, num_starting_states, max
 	noise = OrnsteinUhlenbeckActionNoise(mu=np.zeros(actions_dim))
 	max_torque = float(env.action_space.high[0])
 
-	batch_size = 128
+	# batch_size = 64
 	best_loss = 10
 
 	MSE = nn.MSELoss()
@@ -309,7 +327,9 @@ def actor_critic_DDPG(env, actor, critic, real_dataset, num_starting_states, max
 	# actor = DeterministicPolicy(states_dim, actions_dim, max_torque).double()
 	# critic = Value(states_dim, actions_dim).double()
 
-	critic_optimizer  = optim.Adam(critic.parameters(),  lr=LRC)
+	critic_optimizer  = optim.Adam(critic.parameters(), lr=LRC)
+	if value_lr_schedule is None:
+		value_lr_schedule = torch.optim.lr_scheduler.MultiStepLR(critic_optimizer, milestones=[1500,3000], gamma=0.1)
 	actor_optimizer = optim.Adam(actor.parameters(), lr=LRA)
 
 	#initialize target_critic and target_actor
@@ -325,7 +345,6 @@ def actor_critic_DDPG(env, actor, critic, real_dataset, num_starting_states, max
 	dataset = ReplayMemory(1000000)
 	render = False
 	for ep in range(starting_states):
-
 		if not use_model:
 			state = env.reset()
 
@@ -371,13 +390,14 @@ def actor_critic_DDPG(env, actor, critic, real_dataset, num_starting_states, max
 					critic_optimizer.zero_grad()
 					critic_loss.backward()
 					critic_optimizer.step()
+					# value_lr_schedule.step()
 
 					#compute actor loss
-					actor_loss = -critic(states_prev, actor.sample_action(states_prev)).mean()
+					policy_loss = -critic(states_prev, actor.sample_action(states_prev)).mean()
 
 					#Optimize the actor
 					actor_optimizer.zero_grad()
-					actor_loss.backward()
+					policy_loss.backward()
 					actor_optimizer.step()
 
 					#soft update of the frozen target networks
@@ -414,7 +434,8 @@ def actor_critic_DDPG(env, actor, critic, real_dataset, num_starting_states, max
 			critic_loss = MSE(target_q, current_q)
 			critic_loss.backward()
 			critic_optimizer.step()
-			
+			value_lr_schedule.step()
+
 			model_batch_size = batch_size - true_batch_size
 			random_start_model_batch_size = int(np.floor(random_start_frac * model_batch_size)) #randomly sample from state space
 
@@ -462,16 +483,16 @@ def actor_critic_DDPG(env, actor, critic, real_dataset, num_starting_states, max
 			for target_param, param in zip(target_actor.parameters(), actor.parameters()):
 				target_param.data.copy_(target_param.data * (1.0 - TAU) + param.data *TAU)
 
-		if ep % verbose  == 0:
+		if (ep % verbose  == 0) or (ep == starting_states - 1):
 			print("Ep: {:5d} | Q_Loss: {:.3f} | Pi_Loss: {:.3f} | Average of last 10 rewards:{:.4f}".format(ep, critic_loss.detach(), policy_loss.detach(), sum(all_rewards[-10:])/len(all_rewards[-10:])))
 			#save all_rewards
-			np.save('rewards_actorcritic_checkpoint_use_model_{}_{}_horizon{}_traj{}'.format(use_model, env_name, R_range, max_actions + 1), np.asarray(all_rewards))
+			if not use_model:
+				np.save(os.path.join(file_location,'{}_rewards_actorcritic_checkpoint_use_model_{}_{}_horizon{}_traj{}_{}'.format(model_type, use_model, env_name, R_range, max_actions + 1, file_id)), np.asarray(all_rewards))
 
 		if sum(all_rewards[-10:])/len(all_rewards[-10:]) > -700:
 			render = False
 
-	return target_actor, target_critic
-
+	return actor, critic
 
 
 def actor_critic_TD3(env, actor, critic, real_dataset, num_starting_states, max_actions, states_dim, actions_dim, discount, use_model, train, verbose, all_rewards, P_hat=None):#, target_actor, target_critic):
@@ -615,6 +636,7 @@ def actor_critic_TD3(env, actor, critic, real_dataset, num_starting_states, max_
 
 						for target_param, param in zip(target_actor.parameters(), actor.parameters()):
 							target_param.data.copy_(target_param.data * (1.0 - TAU) + param.data *TAU)
+
 					#compute loss for actor
 					# policy_optimizer.zero_grad()
 					# policy_loss = -critic(torch.cat((states_prev, actor.sample_action(states_prev)),dim=1))
@@ -694,19 +716,17 @@ def actor_critic_TD3(env, actor, critic, real_dataset, num_starting_states, max_
 		if ep % verbose  == 0:
 			print("Ep: {:5d} | Q_Loss: {:.3f} | Pi_Loss: {:.3f} | Average of last 10 rewards:{:.4f}".format(ep, critic_loss.detach(), actor_loss.detach(), sum(all_rewards[-10:])/len(all_rewards[-10:])))
 			#save all_rewards
-			np.save('rewards_actorcritic_checkpoint_use_model_{}_{}_horizon{}_traj{}'.format(use_model, env_name, R_range, max_actions + 1), np.asarray(all_rewards))
+			np.save('{}_rewards_actorcritic_checkpoint_use_model_{}_{}_horizon{}_traj{}'.format(model_type, use_model, env_name, R_range, max_actions + 1), np.asarray(all_rewards))
 
 		if sum(all_rewards[-10:])/len(all_rewards[-10:]) > -500:
 			render = False
 
-	return target_actor, target_critic
+	return actor, critic
 
 
-
-def plan_and_train_ddpg(P_hat, actor, critic, model_opt, num_starting_states, num_episodes, states_dim, actions_dim, discount, max_actions, env, lr_schedule, num_iters):
-	
-	verbose = 200
-	batch_size = 64
+def plan_and_train_ddpg(P_hat, actor, critic, model_opt, num_starting_states, num_episodes, states_dim, actions_dim, discount, max_actions, env, lr, num_iters, file_location, file_id, save_checkpoints_training, verbose, batch_size, num_virtual_episodes, model_type):
+	# verbose = 20
+	# batch_size = 64
 	R_range = 1
 	losses = []
 
@@ -721,40 +741,56 @@ def plan_and_train_ddpg(P_hat, actor, critic, model_opt, num_starting_states, nu
 				'num_starting_states': num_starting_states, 
 				'states_dim'		 : states_dim, 
 				'actions_dim'		 : actions_dim, 
+				'batch_size'		 : batch_size,
 				# 'use_model'			 : False, 
 				'discount'			 : discount, 
 				'max_actions'		 : max_actions, 
 				# 'train'              : train, 
-				'lr_schedule'		 : lr_schedule,
+				'lr'		         : lr,
 				'num_iters'          : num_iters,
 				'losses'             : [],
 				'env'				 : env,
 				# 'value_loss_coeff'   : value_loss_coeff,
-				'verbose'			 : verbose
+				'verbose'			 : verbose,
+				'file_location'		 : file_location,
+				'file_id'			 : file_id,
 			}
 
 	unroll_num = 1
+	# model_type = 'paml'
+	log = 1
 	ell = 0
 	psi = 1.1
 	epsilon = 1.
 	epsilon_decay = 1./100000
 	noise = OrnsteinUhlenbeckActionNoise(mu=np.zeros(actions_dim))
 	all_rewards = []
-	epochs_value = 150
-	value_optimizer = optim.SGD(critic.parameters(), lr=1e-3, momentum=0.90, nesterov=True) 
-	value_lr_schedule = torch.optim.lr_scheduler.MultiStepLR(value_optimizer, milestones=[1500,3000], gamma=0.1)
+	epochs_value = 1000
+	#value_optimizer = optim.SGD(critic.parameters(), lr=1e-3, momentum=0.90, nesterov=True) 
+	# value_optimizer = optim.SGD(critic.parameters(), lr=1e-5, momentum=0.90, nesterov=True) 
+	value_optimizer = optim.SGD(critic.parameters(), lr=1e-5)#, momentum=0.90, nesterov=True) 
+	value_lr_schedule = torch.optim.lr_scheduler.MultiStepLR(value_optimizer, milestones=[5000,8000], gamma=0.1)
 	dataset = ReplayMemory(1000000)
 	max_torque = float(env.action_space.high[0])
+	paml_losses = []
+	global_step = 0
+	total_eps = 50000
+	env_name = env.spec.id
+	true_rewards = []
 
-	while(True):
+	while(global_step <= total_eps/num_starting_states):
 		# Generating sample trajectories 
 		print("Generating sample trajectories ... epislon is {:.3f}".format(epsilon))
-		dataset, _, new_epsilon = generate_data(env, dataset, actor, num_starting_states, None, max_actions, noise, epsilon, epsilon_decay, discount=discount)
+		dataset, _, new_epsilon = generate_data(env, dataset, actor, num_starting_states, None, max_actions, noise, epsilon, epsilon_decay, discount=discount, all_rewards=true_rewards)
 		print(len(dataset))
 		print("Done")
+
+		np.save(os.path.join(file_location,'{}_rewards_actorcritic_checkpoint_use_model_False_{}_horizon{}_traj{}_{}'.format(model_type, env_name, R_range, max_actions + 1,file_id)), np.asarray(true_rewards))
+
 		kwargs['dataset'] = dataset
 		epochs_value = int(np.ceil(epochs_value * psi))
-		critic = pre_train_critic(actor, critic, dataset, epochs_value, discount, batch_size, value_optimizer, value_lr_schedule, max_actions, states_dim, actions_dim, 100)
+		if model_type != 'mle':
+			critic = pre_train_critic(actor, critic, dataset, epochs_value, discount, batch_size, value_optimizer, value_lr_schedule, max_actions, states_dim, actions_dim, verbose=50)
 		kwargs['critic'] = critic
 
 		kwargs['train'] = False
@@ -764,9 +800,8 @@ def plan_and_train_ddpg(P_hat, actor, critic, model_opt, num_starting_states, nu
 		kwargs['use_model'] = False
 		actor_critic_paml_train(**kwargs)
 
-		num_iters = int(np.ceil(num_iters * psi))
-		P_hat = DirectEnvModel(states_dim, actions_dim, max_torque)
-		P_hat.double()
+		num_iters += 10# int(np.ceil(num_iters * psi))
+		
 		kwargs['train'] = True
 		kwargs['num_episodes'] = num_episodes
 		kwargs['num_starting_states'] = num_starting_states
@@ -774,20 +809,33 @@ def plan_and_train_ddpg(P_hat, actor, critic, model_opt, num_starting_states, nu
 		kwargs['num_iters'] = num_iters
 		kwargs['use_model'] = True
 		kwargs['P_hat'] = P_hat
-		env_name = env.spec.id
-		# P_hat.general_train_mle(actor, dataset, num_iters, max_actions, model_opt, env_name, losses, batch_size, noise, epsilon, verbose=20)
-		P_hat = actor_critic_paml_train(**kwargs)
+
+		if model_type =='mle':
+			P_hat.general_train_mle(actor, dataset, num_iters, max_actions, model_opt, env_name, losses, batch_size, noise, epsilon, verbose=20)
+		elif (model_type == 'paml') or (model_type == 'pamlmean'):
+			# P_hat = DirectEnvModel(states_dim, actions_dim, max_torque).double()
+			if (global_step > 0) and (global_step % 3 == 0):
+				lr = lr / 10.
+			kwargs['lr'] = lr
+			kwargs['P_hat'] = P_hat
+			P_hat, _ = actor_critic_paml_train(**kwargs)
+		elif model_type == 'random':
+			P_hat = DirectEnvModel(states_dim, actions_dim, max_torque).double()
+			kwargs['P_hat'] = P_hat
+		else:
+			raise NotImplementedError
 
 		kwargs['train'] = False
 		kwargs['use_model'] = True
 		kwargs['P_hat'] = P_hat
 		kwargs['losses'] = []
-		actor_critic_paml_train(**kwargs)
+		_, loss_paml = actor_critic_paml_train(**kwargs)
+		paml_losses.append(loss_paml)
 
 		use_model = True
-		num_virtual_episodes = 2000
+		# num_virtual_episodes = 600
 		train = True
-		actor, critic = actor_critic_DDPG(env, actor, critic, dataset, num_virtual_episodes, max_actions, states_dim, discount, use_model, train, verbose, all_rewards, epsilon, P_hat=P_hat)
+		actor, critic = actor_critic_DDPG(env, actor, critic, dataset, batch_size, num_virtual_episodes, max_actions, states_dim, discount, use_model, train, verbose, all_rewards, epsilon, value_lr_schedule, P_hat=P_hat, model_type=model_type)
 		
 		#check paml_loss with the new policy
 		kwargs['train'] = False
@@ -796,137 +844,148 @@ def plan_and_train_ddpg(P_hat, actor, critic, model_opt, num_starting_states, nu
 		kwargs['P_hat'] = P_hat
 		kwargs['actor'] = actor
 		kwargs['critic'] = critic
-		kwargs['critic'] = critic
-		actor_critic_paml_train(**kwargs)
-
+		_, loss_paml = actor_critic_paml_train(**kwargs)
+		paml_losses.append(loss_paml)
 		# epsilon = new_epsilon
 
+		if global_step % log == 0:
+			np.save(os.path.join(file_location,'paml_loss_model_{}_env_{}_horizon{}_traj{}_{}'.format(model_type, env_name, R_range, max_actions + 1, file_id)), np.asarray(paml_losses))
+		global_step += 1
 
-if __name__=="__main__":
 	
-	def main():
-		rs = 0
-		# torch.manual_seed(rs)
-		# np.random.seed(rs)	
+def main(
+			env_name, 
+			real_episodes,
+			virtual_episodes,
+			num_eps_per_start,
+			num_iters,
+			max_actions,
+			discount,
+			states_dim,
+			salient_states_dim,
+			initial_model_lr,
+			model_type,
+			file_id,
+			save_checkpoints_training,
+			batch_size,
+			verbose
+		):
 
+	file_location = '/h/abachiro/paml/results'
+	# rs = 0
+	# torch.manual_seed(rs)
+	# np.random.seed(rs)	
+
+	# env = gym.make('Pendulum-v0')
+	#env = dm_control2gym.make(domain_name="cartpole", task_name="balance")
+	# env.seed(rs)
+	# pdb.set_trace()
+
+	if env_name == 'lin_dyn':
+		gym.envs.register(id='lin-dyn-v0', entry_point='gym_linear_dynamics.envs:LinDynEnv',)
+		# env = gym.make('gym_linear_dynamics:lin-dyn-v0')
+		env = gym.make('lin-dyn-v0')
+	elif env_name == 'Pendulum-v0':
 		env = gym.make('Pendulum-v0')
-		#env = dm_control2gym.make(domain_name="cartpole", task_name="balance")
-		# env.seed(rs)
-		# torch.manual_seed(rs)
+	else:
+		raise NotImplementedError
+
+	if model_type == 'model_free':
+		plan = True
+	else:
 		plan = False
 
-		num_starting_states = 100
-		num_episodes = 1
-		batch_size = 64
-		val_num_episodes = 1
-		val_num_starting_states = 10
-		val_batch_size = val_num_starting_states*val_num_episodes
-		
-		num_iters = 100
-		losses = []
-		unroll_num = 1
+	#50
+	num_starting_states = real_episodes if not plan else 100000
 
-		value_loss_coeff = 1.0
-		max_torque = float(env.action_space.high[0])
-		discount = 0.9
+	num_episodes = num_eps_per_start #1
+	#batch_size = 64
+	val_num_episodes = 1
+	val_num_starting_states = 10
+	val_batch_size = val_num_starting_states*val_num_episodes
+	
+	#num_iters = 400
+	losses = []
+	unroll_num = 1
 
-		max_actions = 200
+	value_loss_coeff = 1.0
+	max_torque = float(env.action_space.high[0])
+	#discount = 0.9
 
-		states_dim = 3
-		actions_dim = 1
-		salient_states_dim = 3
-		continuous_actionspace = True
-		R_range = 1
+	#max_actions = 200
 
-		use_model = True
-		train_value_estimate = False
-		train = True
+	#states_dim = 5
+	actions_dim = states_dim
+	#salient_states_dim = 3 #states_dim
+	continuous_actionspace = True
+	R_range = 1
 
-		action_multiplier = 0.1
+	use_model = True
+	train_value_estimate = False
+	train = True
 
-		# critic = Value(states_dim, actions_dim)
-		# critic.double()
-		# actor = DeterministicPolicy(states_dim, actions_dim)
-		# actor.double()
-		# target_actor = DeterministicPolicy(states_dim, actions_dim)
-		# target_actor.double()
-		# target_critic = Value(states_dim, actions_dim)
-		# target_critic.double()
+	action_multiplier = 0.1
+	epsilon = 1.
+	epsilon_decay = 1./100000
+	# critic = Value(states_dim, actions_dim)
+	# critic.double()
+	# actor = DeterministicPolicy(states_dim, actions_dim)
+	# actor.double()
+	# target_actor = DeterministicPolicy(states_dim, actions_dim)
+	# target_actor.double()
+	# target_critic = Value(states_dim, actions_dim)
+	# target_critic.double()
 
-		P_hat = DirectEnvModel(states_dim,actions_dim, MAX_TORQUE)
-		P_hat.double()
-		#P_hat.load_state_dict(torch.load('trained_model_paml_lindyn_horizon6_traj7.pth', map_location=device))
-		#P_hat.load_state_dict(torch.load('act_model_paml_checkpoint_train_True_lin_dyn_horizon5_traj6_using1states.pth', map_location=device))
+	P_hat = DirectEnvModel(states_dim,actions_dim, MAX_TORQUE, small=False)
+	P_hat.double()
+	#P_hat.load_state_dict(torch.load('trained_model_paml_lindyn_horizon6_traj7.pth', map_location=device))
+	#P_hat.load_state_dict(torch.load('act_model_paml_checkpoint_train_True_lin_dyn_horizon5_traj6_using1states.pth', map_location=device))
 
-		# value_optimizer = optim.SGD(critic.parameters(), lr=1e-5, momentum=0.90, nesterov=True) 
-		# value_lr_schedule = torch.optim.lr_scheduler.MultiStepLR(value_optimizer, milestones=[1500,3000], gamma=0.1)
+	# value_optimizer = optim.SGD(critic.parameters(), lr=1e-5, momentum=0.90, nesterov=True) 
+	# value_lr_schedule = torch.optim.lr_scheduler.MultiStepLR(value_optimizer, milestones=[1500,3000], gamma=0.1)
 
-		model_opt = optim.SGD(P_hat.parameters(), lr=1e-3, momentum=0.90, nesterov=True)
-		#opt = optim.Adam(P_hat.parameters(), lr=1e-5, weight_decay=1e-8)
-		lr_schedule = torch.optim.lr_scheduler.MultiStepLR(model_opt, milestones=[5000,7000,8000], gamma=0.1)
+	#1e-4
+	model_opt = optim.SGD(P_hat.parameters(), lr=initial_model_lr, momentum=0.90, nesterov=True)
+	#opt = optim.Adam(P_hat.parameters(), lr=1e-5, weight_decay=1e-8)
+	lr_schedule = torch.optim.lr_scheduler.MultiStepLR(model_opt, milestones=[5000,7000,8000], gamma=0.1)
 
-		if plan:
-			all_rewards = []
-			actor_critic_DDPG(env, None, None, None, num_starting_states, max_actions, states_dim, actions_dim, discount, False, True, 1, all_rewards, P_hat=None)#, target_policy_estimator, target_value_estimator)
-			np.save('actorcritic_pendulum_rewards',np.asarray(all_rewards)) 
-			pdb.set_trace()
-
-
-		# print('Generating sample trajectories ...')
-		# dataset, validation_dataset = generate_data(env, actor, num_starting_states, val_num_starting_states, max_actions)
-		# print('Done!')
-
-		# with torch.no_grad():
-		# 	#generate validation data
-		# 	val_step_state = torch.zeros((val_batch_size, unroll_num, states_dim+actions_dim)).double()
-		# 	for b in range(val_num_starting_states):
-		# 		x_0 = 2*(np.random.random(size=(states_dim,)) - 0.5)
-		# 		val_step_state[b*val_num_episodes:val_num_episodes*(b+1),:unroll_num,:states_dim] = torch.from_numpy(x_0).double()
-
-		# 	val_step_state[:,:unroll_num,states_dim:] = policy_estimator.sample_action(val_step_state[:,:unroll_num,:states_dim]) #I think all this does is make the visualizations look better, shouldn't affect performance (or visualizations ... )
-		# 	val_true_x_curr, val_true_x_next, val_true_a_list, val_true_r_list, val_true_a_prime_list = P_hat.unroll(val_step_state[:,:unroll_num,:], policy_estimator, states_dim, A_numpy, steps_to_unroll=R_range, continuous_actionspace=True, use_model=False, policy_states_dim=states_dim)
-
-		# 	#generate training data
-		# 	train_step_state = torch.zeros((batch_size, unroll_num, states_dim+actions_dim)).double()
-		# 	for b in range(num_starting_states):
-		# 		x_0 = 2*(np.random.random(size=(states_dim,)) - 0.5)
-		# 		train_step_state[b*num_episodes:num_episodes*(b+1),:unroll_num,:states_dim] = torch.from_numpy(x_0).double()
-
-		# 	train_step_state[:,:unroll_num,states_dim:] = policy_estimator.sample_action(train_step_state[:,:unroll_num,:states_dim])#I think all this does is make the visualizations look better, shouldn't affect performance (or visualizations ... )
-		# 	train_true_x_curr, train_true_x_next, train_true_a_list, train_true_r_list, train_true_a_prime_list = P_hat.unroll(train_step_state[:,:unroll_num,:], policy_estimator, states_dim, A_numpy, steps_to_unroll=R_range, continuous_actionspace=True, use_model=False, policy_states_dim=states_dim)
-
-		
-		#get accuracy of true dynamics on validation data
-		# true_r_list = val_true_r_list
-		# true_x_curr = val_true_x_curr
-		# true_a_list = val_true_a_list
-		# step_state = val_step_state
-
+	if plan:
+		all_rewards = []
 		actor = DeterministicPolicy(states_dim, actions_dim, max_torque).double()
 		critic = Value(states_dim, actions_dim).double()
-		kwargs = {
-				'P_hat'              : P_hat, 
-				'actor'	             : actor, 
-				'critic'	 		 : critic,
-				# 'target_critic'	 	 : target_critic,
-				'q_optimizer'		 : None,
-				'opt' 				 : model_opt, 
-				'num_episodes'		 : num_episodes, 
-				'num_starting_states': num_starting_states, 
-				'states_dim'		 : states_dim, 
-				'actions_dim'		 : actions_dim, 
-				'use_model'			 : False, 
-				'discount'			 : discount, 
-				'max_actions'		 : max_actions, 
-				'train'              : False,  
-				'lr_schedule'		 : lr_schedule,
-				'num_iters'          : int(num_iters/120),
-				'losses'             : [],
-				'value_loss_coeff'   : value_loss_coeff
-				}
+		actor_critic_DDPG(env, actor, critic, None, batch_size, num_starting_states, max_actions, states_dim, discount, False, True, verbose, all_rewards, epsilon, None, P_hat=None, model_type='model_free')
+
+		np.save(os.path.join(file_location,'model_free_rewards_actorcritic_use_model_False_{}_horizon{}_traj{}_{}'.format(env_name, R_range, max_actions + 1, file_id)), np.asarray(all_rewards))
+		# np.save('actorcritic_pendulum_rewards',np.asarray(all_rewards)) 
+		# pdb.set_trace()
+	else:
+		actor = DeterministicPolicy(states_dim, actions_dim, max_torque).double()
+		critic = Value(states_dim, actions_dim).double()
+		# kwargs = {
+		# 		'P_hat'              : P_hat, 
+		# 		'actor'	             : actor, 
+		# 		'critic'	 		 : critic,
+		# 		# 'target_critic'	 	 : target_critic,
+		# 		'q_optimizer'		 : None,
+		# 		'opt' 				 : model_opt, 
+		# 		'num_episodes'		 : num_episodes, 
+		# 		'num_starting_states': num_starting_states, 
+		# 		'states_dim'		 : states_dim, 
+		# 		'actions_dim'		 : actions_dim, 
+		# 		'use_model'			 : False, 
+		# 		'discount'			 : discount, 
+		# 		'max_actions'		 : max_actions, 
+		# 		'train'              : False,  
+		# 		'lr_schedule'		 : lr_schedule,
+		# 		'num_iters'          : int(num_iters/120),
+		# 		'losses'             : [],
+		# 		'value_loss_coeff'   : value_loss_coeff
+		# 		}
 
 		#pretrain value function
 		ell = 0
+		# lr = 1e-5
+		plan_and_train_ddpg(P_hat, actor, critic, model_opt, num_starting_states, num_episodes, states_dim, actions_dim, discount, max_actions, env, initial_model_lr, num_iters, file_location, file_id, save_checkpoints_training, verbose, batch_size, virtual_episodes, model_type)
 		# if train_value_estimate:
 		# 	epochs_value = 300
 		# 	verbose = 100
@@ -934,93 +993,79 @@ if __name__=="__main__":
 		# else:
 		# 	critic.load_state_dict(torch.load('critic_horizon{}_traj{}.pth'.format(R_range, max_actions+1), map_location=device))
 		# 	target_critic.load_state_dict(torch.load('critic_horizon{}_traj{}.pth'.format(R_range, max_actions+1), map_location=device))
-		
-		plan_and_train_ddpg(P_hat, actor, critic, model_opt, num_starting_states, num_episodes, states_dim, actions_dim, discount, max_actions, env, lr_schedule, num_iters)
+	# print('Generating sample trajectories ...')
+	# dataset, validation_dataset = generate_data(env, actor, num_starting_states, val_num_starting_states, max_actions)
+	# print('Done!')
 
-			# prefix='true_actorcritic_'
-			# epochs_value = 300
-			# best_loss = 1000
-			# true_r_list = train_true_r_list
-			# true_x_curr = train_true_x_curr
-			# true_a_list = train_true_a_list
-			# # true_returns = torch.zeros_like(true_r_list)
-			# true_returns = discount_rewards(true_r_list[:,ell,:-1], discount, center=False, batch_wise=True)
-			# for i in range(epochs_value):
-			# 	true_value = value_estimator(torch.cat((true_x_curr.squeeze(), true_a_list.squeeze()),dim=2))
-			# 	# true_value = value_estimator(torch.cat((true_x_curr.squeeze(), true_a_list.squeeze()),dim=2))
-				
-			# 	save_stats(true_returns, true_r_list, true_a_list, true_x_curr, value=true_value, prefix='true_actorcritic_')
-			# 	np.save(prefix+'value_training', true_value.squeeze().detach().cpu().numpy())
-			# 	true_value_loss = (true_returns - true_value).pow(2).mean()
-			# 	print('Epoch: {:4d} | Value estimator loss: {:.5f}'.format(i,true_value_loss.detach().cpu()))
+	# with torch.no_grad():
+	# 	#generate validation data
+	# 	val_step_state = torch.zeros((val_batch_size, unroll_num, states_dim+actions_dim)).double()
+	# 	for b in range(val_num_starting_states):
+	# 		x_0 = 2*(np.random.random(size=(states_dim,)) - 0.5)
+	# 		val_step_state[b*val_num_episodes:val_num_episodes*(b+1),:unroll_num,:states_dim] = torch.from_numpy(x_0).double()
 
-			# 	if true_value_loss < best_loss:
-			# 		torch.save(value_estimator.state_dict(), 'value_estimator_horizon{}_traj{}.pth'.format(R_range, max_actions+1))
-			# 		best_loss = true_value_loss
+	# 	val_step_state[:,:unroll_num,states_dim:] = policy_estimator.sample_action(val_step_state[:,:unroll_num,:states_dim]) #I think all this does is make the visualizations look better, shouldn't affect performance (or visualizations ... )
+	# 	val_true_x_curr, val_true_x_next, val_true_a_list, val_true_r_list, val_true_a_prime_list = P_hat.unroll(val_step_state[:,:unroll_num,:], policy_estimator, states_dim, A_numpy, steps_to_unroll=R_range, continuous_actionspace=True, use_model=False, policy_states_dim=states_dim)
 
-			# 	value_opt.zero_grad()
-			# 	true_value_loss.backward()
-			# 	value_opt.step()
-			# 	value_lr_schedule.step()
-			# 	#check validation
-			# 	if (i % 10) == 0:
-			# 		with torch.no_grad():
-			# 			true_x_curr = val_true_x_curr
-			# 			true_a_list = val_true_a_list
-			# 			true_r_list = val_true_r_list
-			# 			# true_returns = torch.zeros_like(true_r_list)
-			# 			true_returns = discount_rewards(true_r_list[:,ell,:-1], discount, center=False, batch_wise=True)
-			# 			true_value = value_estimator(torch.cat((true_x_curr.squeeze(), true_a_list.squeeze()),dim=2))
-			# 			true_value_loss = (true_returns - true_value).pow(2).mean()
-			# 			print('Validation value estimator loss: {:.5f}'.format(true_value_loss.detach().cpu()))
-			# 		true_r_list = train_true_r_list
-			# 		true_x_curr = train_true_x_curr
-			# 		true_a_list = train_true_a_list
-			# 		# true_returns = torch.zeros_like(train_true_r_list)
-			# 		true_returns = discount_rewards(true_r_list[:,ell,:-1], discount, center=False, batch_wise=True)
+	# 	#generate training data
+	# 	train_step_state = torch.zeros((batch_size, unroll_num, states_dim+actions_dim)).double()
+	# 	for b in range(num_starting_states):
+	# 		x_0 = 2*(np.random.random(size=(states_dim,)) - 0.5)
+	# 		train_step_state[b*num_episodes:num_episodes*(b+1),:unroll_num,:states_dim] = torch.from_numpy(x_0).double()
 
+	# 	train_step_state[:,:unroll_num,states_dim:] = policy_estimator.sample_action(train_step_state[:,:unroll_num,:states_dim])#I think all this does is make the visualizations look better, shouldn't affect performance (or visualizations ... )
+	# 	train_true_x_curr, train_true_x_next, train_true_a_list, train_true_r_list, train_true_a_prime_list = P_hat.unroll(train_step_state[:,:unroll_num,:], policy_estimator, states_dim, A_numpy, steps_to_unroll=R_range, continuous_actionspace=True, use_model=False, policy_states_dim=states_dim)
 
-		kwargs['train'] = False
-		kwargs['num_episodes'] = val_num_episodes
-		kwargs['num_starting_states'] = val_num_starting_states
-		# kwargs['true_r_list'] = val_true_r_list
-		# kwargs['true_x_curr'] = val_true_x_curr
-		# kwargs['true_a_list'] = val_true_a_list
-		# kwargs['true_x_next'] = val_true_x_next
-		# kwargs['true_a_prime_list'] = val_true_a_prime_list
-		# kwargs['step_state'] = val_step_state
-		kwargs['dataset'] = validation_dataset
-		kwargs['use_model'] = False
-		actor_critic_paml_train(**kwargs)
+	
+	#get accuracy of true dynamics on validation data
+	# true_r_list = val_true_r_list
+	# true_x_curr = val_true_x_curr
+	# true_a_list = val_true_a_list
+	# step_state = val_step_state
+		# prefix='true_actorcritic_'
+		# epochs_value = 300
+		# best_loss = 1000
+		# true_r_list = train_true_r_list
+		# true_x_curr = train_true_x_curr
+		# true_a_list = train_true_a_list
+		# # true_returns = torch.zeros_like(true_r_list)
+		# true_returns = discount_rewards(true_r_list[:,ell,:-1], discount, center=False, batch_wise=True)
+		# for i in range(epochs_value):
+		# 	true_value = value_estimator(torch.cat((true_x_curr.squeeze(), true_a_list.squeeze()),dim=2))
+		# 	# true_value = value_estimator(torch.cat((true_x_curr.squeeze(), true_a_list.squeeze()),dim=2))
+			
+		# 	save_stats(true_returns, true_r_list, true_a_list, true_x_curr, value=true_value, prefix='true_actorcritic_')
+		# 	np.save(prefix+'value_training', true_value.squeeze().detach().cpu().numpy())
+		# 	true_value_loss = (true_returns - true_value).pow(2).mean()
+		# 	print('Epoch: {:4d} | Value estimator loss: {:.5f}'.format(i,true_value_loss.detach().cpu()))
 
-		val_losses = []
-		kwargs['use_model'] = use_model
-		for i in range(120):
-			kwargs['train'] = False
-			kwargs['num_episodes'] = val_num_episodes
-			kwargs['num_starting_states'] = val_num_starting_states
-			# kwargs['true_r_list'] = val_true_r_list
-			# kwargs['true_x_curr'] = val_true_x_curr
-			# kwargs['true_a_list'] = val_true_a_list
-			# kwargs['true_x_next'] = val_true_x_next
-			# kwargs['true_a_prime_list'] = val_true_a_prime_list
-			# kwargs['step_state'] = val_step_state
-			kwargs['dataset'] = validation_dataset
-			kwargs['losses'] = val_losses
-			actor_critic_paml_train(**kwargs)
+		# 	if true_value_loss < best_loss:
+		# 		torch.save(value_estimator.state_dict(), 'value_estimator_horizon{}_traj{}.pth'.format(R_range, max_actions+1))
+		# 		best_loss = true_value_loss
 
-			kwargs['train'] = train
-			kwargs['num_episodes'] = num_episodes
-			kwargs['num_starting_states'] = num_starting_states
-			# kwargs['true_r_list'] = train_true_r_list
-			# kwargs['true_x_next'] = train_true_x_next
-			# kwargs['true_a_prime_list'] = train_true_a_prime_list
-			# kwargs['step_state'] = train_step_state
-			kwargs['dataset'] = dataset
-			kwargs['losses'] = losses
-			actor_critic_paml_train(**kwargs)
+		# 	value_opt.zero_grad()
+		# 	true_value_loss.backward()
+		# 	value_opt.step()
+		# 	value_lr_schedule.step()
+		# 	#check validation
+		# 	if (i % 10) == 0:
+		# 		with torch.no_grad():
+		# 			true_x_curr = val_true_x_curr
+		# 			true_a_list = val_true_a_list
+		# 			true_r_list = val_true_r_list
+		# 			# true_returns = torch.zeros_like(true_r_list)
+		# 			true_returns = discount_rewards(true_r_list[:,ell,:-1], discount, center=False, batch_wise=True)
+		# 			true_value = value_estimator(torch.cat((true_x_curr.squeeze(), true_a_list.squeeze()),dim=2))
+		# 			true_value_loss = (true_returns - true_value).pow(2).mean()
+		# 			print('Validation value estimator loss: {:.5f}'.format(true_value_loss.detach().cpu()))
+		# 		true_r_list = train_true_r_list
+		# 		true_x_curr = train_true_x_curr
+		# 		true_a_list = train_true_a_list
+		# 		# true_returns = torch.zeros_like(train_true_r_list)
+		# 		true_returns = discount_rewards(true_r_list[:,ell,:-1], discount, center=False, batch_wise=True)
 
-	main()
+# if __name__=="__main__":
+# 	main()
 
 
 

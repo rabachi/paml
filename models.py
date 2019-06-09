@@ -40,26 +40,33 @@ class DirectEnvModel(torch.nn.Module):
 			torch.nn.init.xavier_uniform_(self._enc_mu.weight)
 
 		else:
-			self.fc1 = nn.Linear(states_dim + N_ACTIONS, 4)
-			self._enc_mu = torch.nn.Linear(4, states_dim)
+			self.fc1 = nn.Linear(states_dim + N_ACTIONS, states_dim)
+			# self._enc_mu = torch.nn.Linear(4, states_dim)
 			torch.nn.init.xavier_uniform_(self.fc1.weight)
-			torch.nn.init.xavier_uniform_(self._enc_mu.weight)
+			# torch.nn.init.xavier_uniform_(self._enc_mu.weight)
 
 
 	def forward(self, x):
-		x = self.fc1(x)
-		x = nn.ReLU()(x)
-		if not self.small:
+		if self.small:
+			x = self.fc1(x)
+			mu = nn.Tanh()(x) * 3.0
+
+		else:
+			x = nn.ReLU()(self.fc1(x))
 			x = self.fc2(x)
 			x = nn.ReLU()(x)
 			# x = self.fc3(x)
 			# x = nn.ReLU()(x)
+			mu = nn.Tanh()(self._enc_mu(x)) * 8.0#* 3.0
 
-		mu = nn.Tanh()(self._enc_mu(x)) * 8.0#* 3.0
 		return mu
 
 
-	def unroll(self, state_action, policy, states_dim, A_numpy, steps_to_unroll=2, continuous_actionspace=True, use_model=True, policy_states_dim=2, salient_states_dim=2, noise=None, epsilon=None, epsilon_decay=None,env='lin_dyn'):
+	def unroll_multi_step(self, state_action, policy, states_dim, A_numpy, steps_to_unroll=2, continuous_actionspace=True, use_model=True, policy_states_dim=2, salient_states_dim=2, extra_dims_stable=False, noise=None, epsilon=None, epsilon_decay=None,env='lin_dyn'):
+		pass
+
+
+	def unroll(self, state_action, policy, states_dim, A_numpy, steps_to_unroll=2, continuous_actionspace=True, use_model=True, policy_states_dim=2, salient_states_dim=2, extra_dims_stable=False, noise=None, epsilon=None, epsilon_decay=None,env='lin_dyn'):
 		if state_action is None:
 			return -1	
 		batch_size = state_action.shape[0]
@@ -88,8 +95,9 @@ class DirectEnvModel(torch.nn.Module):
 		with torch.no_grad():
 			a0 = policy.sample_action(x0[:,:,:states_dim])
 			if isinstance(policy, DeterministicPolicy):
-				a0 += torch.from_numpy(noise()*max(0, epsilon)) #try without noise
-				a0 = torch.clamp(a0, min=-1.0, max=1.0)
+				#a0 += torch.from_numpy(noise()*max(0, epsilon)) #try without noise
+				#a0 = torch.clamp(a0, min=-1.0, max=1.0)
+				a0 = torch.from_numpy(noise.get_action(a0.numpy(), 0))
 
 		state_action = torch.cat((x0, a0),dim=2)
 		if use_model:	
@@ -98,8 +106,11 @@ class DirectEnvModel(torch.nn.Module):
 				x_t_1 = x_t_1.unsqueeze(1)
 		else:
 			x_t_1  = torch.einsum('jik,ljk->lji',[A,x0[:,:,:policy_states_dim]])
-			x_t_1 = add_irrelevant_features(x_t_1, states_dim-policy_states_dim, noise_level = 0.4)
-			x_t_1 = x_t_1 + 0.1*a0#torch.einsum('ijk,kk->ijk',[a0,B])
+			if not extra_dims_stable:
+				x_t_1 = add_irrelevant_features(x_t_1, states_dim-policy_states_dim, noise_level=0.4)
+				x_t_1 = x_t_1 + 0.1*a0#torch.einsum('ijk,kk->ijk',[a0,B])
+			else:
+				x_t_1 = x_t_1 + torch.einsum('ijk,kk->ijk',[a0,B])
 
 		x_list = [x0, x_t_1]
 
@@ -107,8 +118,9 @@ class DirectEnvModel(torch.nn.Module):
 			a1 = policy.sample_action(x_list[1][:,:,:states_dim])
 			if isinstance(policy, DeterministicPolicy):
 				# epsilon -= epsilon_decay
-				a1 += torch.from_numpy(noise()*max(0, epsilon)) #try without noise
-				a1 = torch.clamp(a1, min=-1.0, max=1.0)
+				# a1 += torch.from_numpy(noise()*max(0, epsilon)) #try without noise
+				# a1 = torch.clamp(a1, min=-1.0, max=1.0)
+				a1 = torch.from_numpy(noise.get_action(a1.numpy(), 1))
 
 		a_list = [a0, a1]
 		# r_list = [get_reward_fn('lin_dyn',x_list[0][:,:,:policy_states_dim], a0).unsqueeze(2), get_reward_fn('lin_dyn',x_t_1[:,:,:policy_states_dim], a1).unsqueeze(2)]
@@ -128,16 +140,20 @@ class DirectEnvModel(torch.nn.Module):
 					x_next = x_next.unsqueeze(1)
 			else:
 				x_next  = torch.einsum('jik,ljk->lji',[A,state_action[:,:,:policy_states_dim]])
-				x_next = add_irrelevant_features(x_next, states_dim-policy_states_dim, noise_level = 0.4)
-				x_next = x_next + 0.1*state_action[:,:,states_dim:]#torch.einsum('ijk,kk->ijk',[state_action[:,:,states_dim:],B])#0.1*state_action[:,:,states_dim:]
+				if not extra_dims_stable:
+					x_next = add_irrelevant_features(x_next, states_dim-policy_states_dim, noise_level=0.4)
+					x_next = x_next + 0.1*state_action[:,:,states_dim:]#torch.einsum('ijk,kk->ijk',[state_action[:,:,states_dim:],B])#0.1*state_action[:,:,states_dim:]
+				else:
+					x_next = x_next + torch.einsum('ijk,kk->ijk',[state_action[:,:,states_dim:],B])#0.1*state_action[:,:,states_dim:]
 
 			#action_taken = state_action[:,:,states_dim:]
 			with torch.no_grad():
 				a = policy.sample_action(x_next[:,:,:states_dim])
 				if isinstance(policy, DeterministicPolicy):
 					# epsilon -= epsilon_decay
-					a += torch.from_numpy(noise()*max(0, epsilon)) #try without noise
-					a = torch.clamp(a, min=-1.0, max=1.0)
+					# a += torch.from_numpy(noise()*max(0, epsilon)) #try without noise
+					# a = torch.clamp(a, min=-1.0, max=1.0)
+					a = torch.from_numpy(noise.get_action(a.numpy(), s))
 
 
 			# r = get_reward_fn('lin_dyn', x_next[:,:,:policy_states_dim], a).unsqueeze(2) 
@@ -157,7 +173,7 @@ class DirectEnvModel(torch.nn.Module):
 			x_list.append(x_next)
 
 			state_action = next_state_action
-		#x_list = torch.stack(x_list)			
+		#x_list = torch.stack(x_list)		
 		x_list = torch.cat(x_list, 2).view(batch_size, -1, steps_to_unroll+1, states_dim)
 		a_list = torch.cat(a_list, 2).view(batch_size, -1, steps_to_unroll+1, actions_dim)
 		r_list = torch.cat(r_list, 2).view(batch_size, -1, steps_to_unroll+1, 1)
@@ -506,7 +522,8 @@ class DirectEnvModel(torch.nn.Module):
 			
 		return squared_errors.mean()
 	
-	def train_mle(self, pe, state_actions, states_next, epochs, max_actions, R_range, opt, env_name, losses, states_dim, salient_states_dim, verbose=10):
+	def train_mle(self, pe, state_actions, states_next, epochs, max_actions, R_range, opt, env_name, losses, states_dim, salient_states_dim, file_location, file_id, save_checkpoints=False, verbose=10):
+		best_loss = 1000
 
 		for i in range(epochs):
 			opt.zero_grad()
@@ -520,10 +537,17 @@ class DirectEnvModel(torch.nn.Module):
 				squared_errors += F.pad(input=(states_next[:,step:,:] - next_step_state)**2, pad=(0,0,step,0,0,0), mode='constant', value=0)
 
 				shortened = next_step_state[:,:-1,:]
-				a = pe.sample_action(torch.DoubleTensor(shortened[:,:,:states_dim]))	
+				# a = pe.sample_action(torch.DoubleTensor(shortened[:,:,:states_dim]))	
+				a = state_actions[:, step+1:, states_dim:]
 				step_state = torch.cat((shortened,a),dim=2)
 
 			model_loss = torch.mean(squared_errors) #+ reward_loss)# + done_loss)
+
+			if model_loss.detach().data.cpu() < best_loss and save_checkpoints:
+				torch.save(self.state_dict(), os.path.join(file_location,'model_mle_checkpoint_reinforce_{}_horizon{}_traj{}_{}.pth'.format(env_name, R_range, max_actions + 1, file_id)))
+				best_loss = model_loss.detach().data.cpu()
+
+
 			if i % verbose == 0:
 				print("Epoch: {}, negloglik  = {:.7f}".format(i, model_loss.data.cpu()))
 
@@ -532,10 +556,9 @@ class DirectEnvModel(torch.nn.Module):
 			losses.append(model_loss.data.cpu())
 		return model_loss
 
-	def general_train_mle(self, pe, dataset, epochs, max_actions, opt, env_name, losses, batch_size, noise, epsilon, verbose=20):
-		states_dim = 2
-		salient_dims = states_dim
-		actions_dim = 2
+
+	def general_train_mle(self, pe, dataset, epochs, max_actions, opt, env_name, losses, batch_size, noise, epsilon, file_location, file_id, save_checkpoints=False, verbose=20):
+		best_loss = 1000
 
 		for i in range(epochs):
 			#sample from dataset 
@@ -563,6 +586,11 @@ class DirectEnvModel(torch.nn.Module):
 
 			#step_state = torch.cat((next_step_state,a),dim=1)
 			model_loss = torch.mean(squared_errors)
+
+			if model_loss.detach().data.cpu() < best_loss and save_checkpoints:
+				torch.save(self.state_dict(), os.path.join(file_location,'model_mle_checkpoint_actorcritic_{}_horizon{}_traj{}_{}.pth'.format(env_name, 1, max_actions + 1, file_id)))
+				best_loss = model_loss.detach().data.cpu()
+
 			if (i % verbose == 0) or (i == epochs - 1):
 				print("R_range: {}, negloglik  = {:.7f}".format(1, model_loss.data.cpu()))
 

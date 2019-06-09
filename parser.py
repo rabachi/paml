@@ -29,14 +29,17 @@ if __name__ == "__main__":
 	parser.add_argument('--batch_size', type=int, default=64, help='batch_size for actor critic')
 	parser.add_argument('--states_dim', type=int, default=5, help='total states dimensions')
 	parser.add_argument('--salient_states_dim', type=int, default=2, help='The number of non-random state dimensions, make sure if running ac that the dynamics are set correctly')
+	parser.add_argument('--extra_dims_stable', help='set to true to have irrelevant dimensions that have stable dynamics')
+	parser.add_argument('--small_model', help='set to true to use a small model for P_hat')
 	parser.add_argument('--initial_model_lr', type=float, default=1e-4)
-	parser.add_argument('--num_iters', default=100, help='Number of gradient updates on model')
+	parser.add_argument('--num_iters', type=int, default=100, help='Number of gradient updates on model')
 	parser.add_argument('--verbose', type=int, default=10)
 	parser.add_argument('--max_torque', default=2.0, help='max torque for linear dynamics in only reinforce')
 	parser.add_argument('--real_episodes', type=int, default=10, help='number of real episodes to collect between planning updates')
 	parser.add_argument('--num_eps_per_start', type=int, default=1)
 	parser.add_argument('--virtual_episodes', type=int, default=1000, help='number of virtual episodes to gather from model for planning')
 	parser.add_argument('--max_actions', type=int, default=20, help='-1 length of trajectory')
+	parser.add_argument('--num_action_repeats', type=int, default=2, help='number of times to repeat an action')
 	parser.add_argument('--discount', default=0.99)
 	#continuous action-space, default=True
 	parser.add_argument('--file_id', type=str, default='0', help='for saving multiple runs separately')
@@ -62,7 +65,9 @@ if __name__ == "__main__":
 							args.file_id,
 							args.save_checkpoints_training,
 							args.batch_size,
-							args.verbose
+							args.verbose,
+							args.small_model,
+							args.num_action_repeats
 						)
 	elif args.algo == 'reinforce':
 		get_data.main(
@@ -81,7 +86,9 @@ if __name__ == "__main__":
 						args.file_id,
 						args.save_checkpoints_training,
 						args.batch_size, #I don't think this is being used anywhere
-						args.verbose
+						args.verbose,
+						args.extra_dims_stable,
+						args.small_model
 					)
 
 

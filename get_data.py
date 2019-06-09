@@ -67,7 +67,9 @@ def paml_train(P_hat,
 				verbose,
 				save_checkpoints,
 				file_location,
-				file_id):
+				file_id,
+				extra_dims_stable
+				):
 
 	MSE = nn.MSELoss()
 	best_loss = 15000
@@ -75,6 +77,7 @@ def paml_train(P_hat,
 	batch_size = num_episodes*num_starting_states
 	R_range = max_actions
 	unroll_num = 1
+	# unroll_num = R_range
 	end_of_trajectory = 1
 	ell = 0
 	num_iters = num_iters if train else 1
@@ -97,12 +100,15 @@ def paml_train(P_hat,
 	# 	true_pe_grads = torch.cat((true_pe_grads,true_pe_grads_attached[g].detach().view(-1)))
 
 	step_state = torch.cat((true_x_curr[:,:,0],true_a_list[:,:,0]),dim=2)
+	# step_state = torch.cat((true_x_curr[:,0,:],true_a_list[:,0,:]),dim=2)
+	policy_states_dim = salient_states_dim if not extra_dims_stable else states_dim
 	for i in range(num_iters):
 		# opt.zero_grad()
 		pe.zero_grad()
 		#calculate model gradients
 		#Do i need this line? seems to make a big difference .... 
-		model_x_curr, model_x_next, model_a_list, model_r_list, model_a_prime_list = P_hat.unroll(step_state[:,:unroll_num,:], pe, states_dim, A_numpy, steps_to_unroll=R_range, continuous_actionspace=True, use_model=use_model, policy_states_dim=salient_states_dim)
+		# pdb.set_trace()
+		model_x_curr, model_x_next, model_a_list, model_r_list, model_a_prime_list = P_hat.unroll(step_state[:,:unroll_num,:], pe, states_dim, A_numpy, steps_to_unroll=R_range, continuous_actionspace=True, use_model=use_model, policy_states_dim=policy_states_dim, salient_states_dim=salient_states_dim, extra_dims_stable=extra_dims_stable)
 
 		model_returns = discount_rewards(model_r_list[:,ell, 1:], discount, center=False, batch_wise=True)
 		model_log_probs = get_selected_log_probabilities(pe, model_x_next, model_a_prime_list).squeeze()
@@ -131,7 +137,7 @@ def paml_train(P_hat,
 		if loss.detach().cpu() < best_loss and use_model:
 			#Save model and losses so far
 			if save_checkpoints:
-				torch.save(P_hat.state_dict(), os.path.join(file_location,'model_paml_checkpoint_train_{}_{}_horizon{}_traj{}_using{}states_{}.pth'.format(train, env_name, R_range, max_actions + 1, file_id)))
+				torch.save(P_hat.state_dict(), os.path.join(file_location,'model_paml_checkpoint_train_{}_{}_horizon{}_traj{}_{}.pth'.format(train, env_name, R_range, max_actions + 1, file_id)))
 				np.save(os.path.join(file_location, 'loss_paml_checkpoint_train_{}_{}_horizon{}_traj{}_{}'.format(train, env_name, R_range, max_actions + 1, file_id)), np.asarray(losses))
 			best_loss = loss.detach().cpu()
 
@@ -190,12 +196,14 @@ def reinforce(policy_estimator,
 			train=True,
 			verbose=100,
 			all_rewards=[],
-			model_type='paml'):
+			model_type='paml',
+			extra_dims_stable=False):
 
 	env_name = 'lin_dyn'
 	best_loss = 1000
 	# all_rewards = []
 	unroll_num = 1
+	# unroll_num = R_range
 	ell = 0
 	max_actions = R_range
 	batch_size = 5 if train else num_episodes
@@ -203,6 +211,7 @@ def reinforce(policy_estimator,
 	batch_actions = torch.zeros((batch_size, max_actions, actions_dim)).double()
 	batch_returns = torch.zeros((batch_size, max_actions, 1)).double()
 	print(use_model)
+	policy_states_dim = salient_states_dim if not extra_dims_stable else states_dim
 	for ep in range(int(num_episodes/batch_size)):
 		with torch.no_grad():
 			step_state = torch.zeros((batch_size, max_actions, states_dim+actions_dim)).double()
@@ -212,7 +221,7 @@ def reinforce(policy_estimator,
 			
 			step_state[:,:unroll_num,states_dim:] = policy_estimator.sample_action(step_state[:,:unroll_num,:states_dim])
 
-			model_x_curr, model_x_next, model_a_list, model_r_list, model_a_prime_list = P_hat.unroll(step_state[:,:unroll_num,:], policy_estimator, states_dim, A_numpy, steps_to_unroll=R_range, continuous_actionspace=True, use_model=use_model, policy_states_dim=salient_states_dim)
+			model_x_curr, model_x_next, model_a_list, model_r_list, model_a_prime_list = P_hat.unroll(step_state[:,:unroll_num,:], policy_estimator, states_dim, A_numpy, steps_to_unroll=R_range, continuous_actionspace=True, use_model=use_model, policy_states_dim=policy_states_dim, salient_states_dim=salient_states_dim, extra_dims_stable=extra_dims_stable)
 
 			all_rewards.extend(model_r_list[:,ell,:-1].contiguous().view(-1,max_actions).sum(dim=1).tolist())
 
@@ -252,10 +261,13 @@ def reinforce(policy_estimator,
 			if not use_model:
 				np.save(os.path.join(file_location,'{}_state{}_salient{}_rewards_reinforce_checkpoint_use_model_{}_{}_horizon{}_traj{}_{}'.format(model_type, states_dim, salient_states_dim, use_model, env_name, R_range, max_actions + 1, file_id)), np.asarray(all_rewards))
 
+			if len(all_rewards) >= 100000: #dump some data to save space
+				all_rewards = []
+
 	return best_pe
 
 
-def plan_and_train(P_hat, policy_estimator, model_opt, policy_optimizer, num_starting_states, num_episodes, states_dim, salient_states_dim, actions_dim, discount, max_actions, A_numpy, lr_schedule, num_iters, losses, rewards_log, verbose, num_virtual_episodes, file_location, file_id, save_checkpoints, model_type):
+def plan_and_train(P_hat, policy_estimator, model_opt, policy_optimizer, num_starting_states, num_episodes, states_dim, salient_states_dim, actions_dim, discount, max_actions, A_numpy, lr_schedule, num_iters, losses, rewards_log, verbose, num_virtual_episodes, file_location, file_id, save_checkpoints, model_type, extra_dims_stable):
 	# verbose = 1
 	batch_size = num_starting_states * num_episodes
 	R_range = max_actions
@@ -277,7 +289,8 @@ def plan_and_train(P_hat, policy_estimator, model_opt, policy_optimizer, num_sta
 				'salient_states_dim' : salient_states_dim,
 				'save_checkpoints'   : save_checkpoints,
 				'file_location'		 : file_location,
-				'file_id'			 : file_id
+				'file_id'			 : file_id,
+				'extra_dims_stable'  : extra_dims_stable
 			}
 
 	unroll_num = 1
@@ -289,6 +302,7 @@ def plan_and_train(P_hat, policy_estimator, model_opt, policy_optimizer, num_sta
 	total_eps = 10000.
 	global_step = 0
 	skip_next_training = False
+	policy_states_dim = salient_states_dim if not extra_dims_stable else states_dim
 	while(global_step <= total_eps/num_starting_states):
 		if (global_step >= total_eps/num_starting_states - 5) or not skip_next_training:
 			with torch.no_grad():
@@ -300,13 +314,14 @@ def plan_and_train(P_hat, policy_estimator, model_opt, policy_optimizer, num_sta
 
 				train_step_state[:,:unroll_num,states_dim:] = policy_estimator.sample_action(train_step_state[:,:unroll_num,:states_dim])#I think all this does is make the visualizations look better, shouldn't affect performance (or visualizations ... )
 				#throw out old data
-				train_true_x_curr, train_true_x_next, train_true_a_list, train_true_r_list, train_true_a_prime_list = P_hat.unroll(train_step_state[:,:unroll_num,:], policy_estimator, states_dim, A_numpy, steps_to_unroll=R_range, continuous_actionspace=True, use_model=False, policy_states_dim=salient_states_dim)
+				train_true_x_curr, train_true_x_next, train_true_a_list, train_true_r_list, train_true_a_prime_list = P_hat.unroll(train_step_state[:,:unroll_num,:], policy_estimator, states_dim, A_numpy, steps_to_unroll=R_range, continuous_actionspace=True, use_model=False, policy_states_dim=policy_states_dim, salient_states_dim=salient_states_dim, extra_dims_stable=extra_dims_stable)
 				train_true_returns = discount_rewards(train_true_r_list[:,0,1:], discount=discount, batch_wise=True, center=False)
 			
 				print("Checking policy performance on true dynamics ...", train_true_r_list.squeeze().sum(dim=1).mean())
 				true_rewards.append(train_true_r_list.squeeze().sum(dim=1).mean())
 
 			np.save(os.path.join(file_location,'{}_state{}_salient{}_rewards_reinforce_checkpoint_use_model_False_{}_horizon{}_traj{}_{}'.format(model_type, states_dim, salient_states_dim,'lin_dyn', R_range, max_actions + 1, file_id)), np.asarray(true_rewards))
+
 			# z = list(zip(train_true_x_curr, train_true_x_next, train_true_a_list, train_true_returns, train_true_a_prime_list))
 			# random.shuffle(z)
 			# train_true_x_curr[:], train_true_x_next[:], train_true_a_list[:], train_true_returns[:], train_true_a_prime_list[:] = zip(*z)
@@ -345,7 +360,7 @@ def plan_and_train(P_hat, policy_estimator, model_opt, policy_optimizer, num_sta
 
 		if model_type == 'mle':
 			state_actions = torch.cat((train_true_x_curr.squeeze(), train_true_a_list.squeeze()), dim=2)
-			P_hat.train_mle(policy_estimator, state_actions, train_true_x_next.squeeze(), num_iters, max_actions, R_range, model_opt, "lin_dyn", losses, states_dim, salient_states_dim)
+			P_hat.train_mle(policy_estimator, state_actions, train_true_x_next.squeeze(), num_iters, max_actions, R_range, model_opt, "lin_dyn", losses, states_dim, salient_states_dim, file_location, file_id, save_checkpoints=save_checkpoints)
 		elif (model_type == 'paml') or (model_type == 'pamlmean'):
 			# P_hat = DirectEnvModel(states_dim,actions_dim, MAX_TORQUE).double()
 			kwargs['P_hat'] = P_hat
@@ -395,7 +410,8 @@ def plan_and_train(P_hat, policy_estimator, model_opt, policy_optimizer, num_sta
 									train=True,
 									verbose=10,
 									all_rewards=rewards_log,
-									model_type=model_type
+									model_type=model_type,
+									extra_dims_stable=extra_dims_stable
 									)
 
 		paml_model = []
@@ -494,12 +510,15 @@ def main(
 			file_id,
 			save_checkpoints_training,
 			batch_size,
-			verbose
+			verbose,
+			extra_dims_stable,
+			small_model
 		):
 	# rs = 2
 	# torch.manual_seed(rs)
 	# np.random.seed(rs)	
-	file_location = '/h/abachiro/paml/results'
+	# file_location = '/h/abachiro/paml/results'
+	file_location = '/scratch/gobi1/abachiro/paml_results'
 
 	MAX_TORQUE = max_torque#2.0
 	num_episodes = num_eps_per_start#1
@@ -512,7 +531,7 @@ def main(
 		plan = False
 
 	#50
-	num_starting_states = real_episodes if not plan else 4000
+	num_starting_states = real_episodes if not plan else 1000000
 
 	# max_actions = 10
 	# states_dim = 20
@@ -534,7 +553,7 @@ def main(
 	policy_optimizer = optim.Adam(policy_estimator.parameters(), lr=0.0001)
 	# policy_estimator.load_state_dict(torch.load('policy_reinforce_use_model_True_horizon20_traj21.pth',map_location=device))
 
-	P_hat = DirectEnvModel(states_dim, actions_dim, MAX_TORQUE, mult=action_multiplier, small=False)#, action_multiplier=0.1)
+	P_hat = DirectEnvModel(states_dim, actions_dim, MAX_TORQUE, mult=action_multiplier, small=small_model)#, action_multiplier=0.1)
 	P_hat.double()
 	# P_hat.load_state_dict(torch.load('trained_model_paml_lindyn_horizon5_traj6.pth', map_location=device))
 	# P_hat.load_state_dict(torch.load('1model_paml_checkpoint_train_False_lin_dyn_horizon20_traj21_using1states.pth', map_location=device))
@@ -570,15 +589,23 @@ def main(
 	A_all[2] = np.array([[0.9, 0.4], [-0.4, 0.9]])
 	# A_all[2] = np.array([[0.9, 0.4], [-0.4, 0.9]])
 
+	if extra_dims_stable:
+		extra_dim = states_dim - salient_states_dim 
+		block = np.eye(extra_dim) * 0.98
+		A_numpy = np.block([
+						 [A_all[salient_states_dim],               	 np.zeros((salient_states_dim, extra_dim))],
+						 [np.zeros((extra_dim, salient_states_dim)), block                 					  ]
+						  ])
+	else:
+		A_numpy = A_all[salient_states_dim]
 
-	A_numpy = A_all[salient_states_dim]
 	train = True
 	
 	losses = []
 	rewards_log = []
 
 	if not plan:
-		plan_and_train(P_hat, policy_estimator, model_opt, policy_optimizer, num_starting_states, num_episodes, states_dim, salient_states_dim, actions_dim, discount, max_actions, A_numpy, lr_schedule, num_iters, losses, rewards_log, verbose, virtual_episodes, file_location, file_id, save_checkpoints_training, model_type)
+		plan_and_train(P_hat, policy_estimator, model_opt, policy_optimizer, num_starting_states, num_episodes, states_dim, salient_states_dim, actions_dim, discount, max_actions, A_numpy, lr_schedule, num_iters, losses, rewards_log, verbose, virtual_episodes, file_location, file_id, save_checkpoints_training, model_type, extra_dims_stable)
 
 
 	########## REINFORCE ############
@@ -586,7 +613,7 @@ def main(
 		batch_size = 5
 		use_model = True
 		# rewards_log = []
-		reinforce(
+		reinforce(  
 					policy_estimator, 
 					A_numpy,
 					P_hat,
@@ -605,10 +632,12 @@ def main(
 					None,
 					file_location,
 					file_id,
+					save_checkpoints_training,
 					train=True,
 					verbose=verbose,
 					all_rewards=[],
-					model_type='model_free'
+					model_type='model_free',
+					extra_dims_stable=extra_dims_stable
 				)
 
 		# np.save(os.path.join(file_location,'reinforce_rewards_{}'.format,np.asarray(all_rewards)) 

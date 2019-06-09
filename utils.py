@@ -50,20 +50,29 @@ def discount_rewards(list_of_rewards, discount, center=True, batch_wise=False):
 			return r
 
 #very stupidly written function, too lazy for now to make better 
-def generate_data(env, dataset, actor, train_starting_states, val_starting_states, max_actions,noise, epsilon, epsilon_decay, discount=0.995, all_rewards=[]):
+def generate_data(env, dataset, actor, train_starting_states, val_starting_states, max_actions,noise, epsilon, epsilon_decay, num_action_repeats, discount=0.995, all_rewards=[]):
 	# dataset = ReplayMemory(1000000)
 	for ep in range(train_starting_states):
 		state = env.reset()
+
+		noise.reset()
+		# epsilon -= epsilon_decay
+		# epsilon = epsilon_original
+
 		states = [state]
 		actions = []
 		rewards = []
-
+		get_new_action = True
 		for timestep in range(max_actions):
-			# epsilon -= epsilon_decay
-			with torch.no_grad():
-				action = actor.sample_action(torch.DoubleTensor(state)).detach().numpy()
-				action += noise()*max(0, epsilon) #try without noise
-				action = np.clip(action, -1., 1.)
+			if get_new_action:
+				with torch.no_grad():
+					# epsilon -= epsilon_decay
+					action = actor.sample_action(torch.DoubleTensor(state)).detach().numpy()
+					# action += noise()*max(0, epsilon) #try without noise
+					# action = np.clip(action, -1., 1.)
+					action = noise.get_action(action, timestep)
+					get_new_action = False
+					action_counter = 1
 
 			state_prime, reward, done, _ = env.step(action)
 
@@ -73,6 +82,8 @@ def generate_data(env, dataset, actor, train_starting_states, val_starting_state
 
 			dataset.push(state, state_prime, action, reward)
 			state = state_prime
+			get_new_action = True if action_counter == num_action_repeats else False
+			action_counter += 1
 		#returns = discount_rewards(rewards, discount, center=True, batch_wise=False)
 
 		# for x, x_next, u, r, ret in zip(states[:-1], states[1:], actions, rewards, returns):
@@ -82,30 +93,30 @@ def generate_data(env, dataset, actor, train_starting_states, val_starting_state
 	print('Average rewards on true dynamics: {:.3f}'.format(sum(all_rewards)/len(all_rewards)))
 
 	val_dataset = None
-	if val_starting_states is not None:
-		val_dataset = ReplayMemory(100000)
-		for ep in range(val_starting_states):
-			state = env.reset()
-			states = [state]
-			actions = []
-			rewards = []
+	# if val_starting_states is not None:
+	# 	val_dataset = ReplayMemory(100000)
+	# 	for ep in range(val_starting_states):
+	# 		state = env.reset()
+	# 		states = [state]
+	# 		actions = []
+	# 		rewards = []
 
-			for timestep in range(max_actions):
-				with torch.no_grad():
-					action = actor.sample_action(torch.DoubleTensor(state)).detach().numpy()
-					#action += noise()*max(0, epsilon) #try without noise
-					#action = np.clip(action, -1., 1.)
-				state_prime, reward, done, _ = env.step(action)
+	# 		for timestep in range(max_actions):
+	# 			with torch.no_grad():
+	# 				action = actor.sample_action(torch.DoubleTensor(state)).detach().numpy()
+	# 				#action += noise()*max(0, epsilon) #try without noise
+	# 				#action = np.clip(action, -1., 1.)
+	# 			state_prime, reward, done, _ = env.step(action)
 
-				actions.append(action)
-				states.append(state_prime)
-				rewards.append(reward)
+	# 			actions.append(action)
+	# 			states.append(state_prime)
+	# 			rewards.append(reward)
 
-				val_dataset.push(state, state_prime, action, reward)
+	# 			val_dataset.push(state, state_prime, action, reward)
 
-				state = state_prime
+	# 			state = state_prime
 
-	return dataset, val_dataset, epsilon
+	return dataset, val_dataset#, epsilon
 
 
 def lin_dyn(A, steps, policy, all_rewards, x=None, extra_dim=0, discount=0.9):

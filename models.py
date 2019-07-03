@@ -22,16 +22,26 @@ import os
 device = 'cpu'
 
 class DirectEnvModel(torch.nn.Module):
-	def __init__(self, states_dim, N_ACTIONS, MAX_TORQUE, mult=0.1, small=False):
+	def __init__(self, states_dim, N_ACTIONS, MAX_TORQUE, mult=0.1, model_size='nn', hidden_size=2):
 		super(DirectEnvModel, self).__init__()
 		# build network layers
 		self.states_dim = states_dim
 		self.n_actions = N_ACTIONS
 		self.max_torque = MAX_TORQUE
 		self.mult = mult
-		self.small = small
+		self.model_size = model_size
 
-		if not small:
+		if self.model_size == 'small':
+			self.fc1 = nn.Linear(states_dim + N_ACTIONS, states_dim)
+			torch.nn.init.xavier_uniform_(self.fc1.weight)
+
+		elif self.model_size == 'constrained':
+			# hidden_size = int(np.ceil(states_dim/2))
+			self. fc1 = nn.Linear(states_dim + N_ACTIONS, hidden_size)
+			self._enc_mu = torch.nn.Linear(hidden_size, states_dim)
+			torch.nn.init.xavier_uniform_(self.fc1.weight)
+			torch.nn.init.xavier_uniform_(self._enc_mu.weight)
+		else:
 			self.fc1 = nn.Linear(states_dim + N_ACTIONS, 64)
 			self.fc2 = nn.Linear(64, 64)
 			self._enc_mu = torch.nn.Linear(64, states_dim)
@@ -39,26 +49,22 @@ class DirectEnvModel(torch.nn.Module):
 			torch.nn.init.xavier_uniform_(self.fc2.weight)
 			torch.nn.init.xavier_uniform_(self._enc_mu.weight)
 
-		else:
-			self.fc1 = nn.Linear(states_dim + N_ACTIONS, states_dim)
-			# self._enc_mu = torch.nn.Linear(4, states_dim)
-			torch.nn.init.xavier_uniform_(self.fc1.weight)
-			# torch.nn.init.xavier_uniform_(self._enc_mu.weight)
-
 
 	def forward(self, x):
-		if self.small:
+		if self.model_size == 'small':
 			x = self.fc1(x)
-			mu = nn.Tanh()(x) * 3.0
-
+			# mu = nn.Tanh()(x) * 8.0
+			mu = x
+		elif self.model_size == 'constrained':
+			x = self._enc_mu(self.fc1(x))
+			mu = x#nn.Tanh()(x) * 360.0
 		else:
 			x = nn.ReLU()(self.fc1(x))
 			x = self.fc2(x)
 			x = nn.ReLU()(x)
 			# x = self.fc3(x)
 			# x = nn.ReLU()(x)
-			mu = nn.Tanh()(self._enc_mu(x)) * 8.0#* 3.0
-
+			mu = nn.Tanh()(self._enc_mu(x)) * 360.0#* 3.0
 		return mu
 
 
@@ -95,8 +101,8 @@ class DirectEnvModel(torch.nn.Module):
 		with torch.no_grad():
 			a0 = policy.sample_action(x0[:,:,:states_dim])
 			if isinstance(policy, DeterministicPolicy):
-				#a0 += torch.from_numpy(noise()*max(0, epsilon)) #try without noise
-				#a0 = torch.clamp(a0, min=-1.0, max=1.0)
+				# a0 += torch.from_numpy(noise()*max(0, epsilon)) #try without noise
+				# a0 = torch.clamp(a0, min=-1.0, max=1.0)
 				a0 = torch.from_numpy(noise.get_action(a0.numpy(), 0))
 
 		state_action = torch.cat((x0, a0),dim=2)
@@ -544,7 +550,7 @@ class DirectEnvModel(torch.nn.Module):
 			model_loss = torch.mean(squared_errors) #+ reward_loss)# + done_loss)
 
 			if model_loss.detach().data.cpu() < best_loss and save_checkpoints:
-				torch.save(self.state_dict(), os.path.join(file_location,'model_mle_checkpoint_reinforce_{}_horizon{}_traj{}_{}.pth'.format(env_name, R_range, max_actions + 1, file_id)))
+				torch.save(self.state_dict(), os.path.join(file_location,'model_mle_checkpoint_state{}_salient{}_reinforce_{}_horizon{}_traj{}_{}.pth'.format(states_dim, salient_states_dim, env_name, R_range, max_actions + 1, file_id)))
 				best_loss = model_loss.detach().data.cpu()
 
 
@@ -557,7 +563,7 @@ class DirectEnvModel(torch.nn.Module):
 		return model_loss
 
 
-	def general_train_mle(self, pe, dataset, epochs, max_actions, opt, env_name, losses, batch_size, noise, epsilon, file_location, file_id, save_checkpoints=False, verbose=20):
+	def general_train_mle(self, pe, dataset, states_dim, salient_states_dim, epochs, max_actions, opt, env_name, losses, batch_size, file_location, file_id, save_checkpoints=False, verbose=20, lr_schedule=None):
 		best_loss = 1000
 
 		for i in range(epochs):
@@ -588,7 +594,7 @@ class DirectEnvModel(torch.nn.Module):
 			model_loss = torch.mean(squared_errors)
 
 			if model_loss.detach().data.cpu() < best_loss and save_checkpoints:
-				torch.save(self.state_dict(), os.path.join(file_location,'model_mle_checkpoint_actorcritic_{}_horizon{}_traj{}_{}.pth'.format(env_name, 1, max_actions + 1, file_id)))
+				torch.save(self.state_dict(), os.path.join(file_location,'model_mle_checkpoint_state{}_salient{}_actorcritic_{}_horizon{}_traj{}_{}.pth'.format(states_dim, salient_states_dim, env_name, 1, max_actions + 1, file_id)))
 				best_loss = model_loss.detach().data.cpu()
 
 			if (i % verbose == 0) or (i == epochs - 1):
@@ -597,5 +603,7 @@ class DirectEnvModel(torch.nn.Module):
 			opt.zero_grad()
 			model_loss.backward()
 			opt.step()
+			if lr_schedule:
+				lr_schedule.step()
 			losses.append(model_loss.data.cpu())
 		return model_loss

@@ -20,7 +20,7 @@ def get_reward_fn(env, states_tensor, actions_tensor):
 		#rewards = torch.clamp(states_tensor[:,0]**2, min=0., max=1.0)
 		return rewards
 
-	if env.spec.id == 'Pendulum-v0':
+	if env.spec.id == 'Pendulum-v0': 
 		thcos = states_tensor[:,:,0]
 		thsin = states_tensor[:,:,1]
 		thdot = states_tensor[:,:,2]
@@ -39,6 +39,12 @@ def get_reward_fn(env, states_tensor, actions_tensor):
 		costs = angle_normalize(th)**2 + .1*thdot**2 + .001*(u**2)
 
 		return -costs#.unsqueeze(2)
+
+	if env.spec.id == 'cc777c9bc75a99b8b1d5bc2851c1063b-v0': #pretty ugly but this is what I get for dm_control
+		COS_BND = np.cos(np.deg2rad(8))
+
+		rewards = (torch.le(states_tensor[:,:,0], 1) == torch.ge(states_tensor[:,:,0], COS_BND))
+		return rewards.double()
 
 	elif env.spec.id == 'CartPole-v0':
 		theta_threshold_radians = 12 * 2 * np.pi / 360

@@ -30,7 +30,8 @@ if __name__ == "__main__":
 	parser.add_argument('--states_dim', type=int, default=5, help='total states dimensions')
 	parser.add_argument('--salient_states_dim', type=int, default=2, help='The number of non-random state dimensions, make sure if running ac that the dynamics are set correctly')
 	parser.add_argument('--extra_dims_stable', help='set to true to have irrelevant dimensions that have stable dynamics')
-	parser.add_argument('--small_model', help='set to true to use a small model for P_hat')
+	parser.add_argument('--model_size', type=str, help='use "small", "constrained", or "nn"')
+	parser.add_argument('--hidden_size', type=int, help='hidden_size of model chosen')
 	parser.add_argument('--initial_model_lr', type=float, default=1e-4)
 	parser.add_argument('--num_iters', type=int, default=100, help='Number of gradient updates on model')
 	parser.add_argument('--verbose', type=int, default=10)
@@ -40,9 +41,11 @@ if __name__ == "__main__":
 	parser.add_argument('--virtual_episodes', type=int, default=1000, help='number of virtual episodes to gather from model for planning')
 	parser.add_argument('--max_actions', type=int, default=20, help='-1 length of trajectory')
 	parser.add_argument('--num_action_repeats', type=int, default=2, help='number of times to repeat an action')
+	parser.add_argument('--planning_horizon', type=int, default=1, help='planning horizon for actor-critic fomulation')
 	parser.add_argument('--discount', default=0.99)
 	#continuous action-space, default=True
 	parser.add_argument('--file_id', type=str, default='0', help='for saving multiple runs separately')
+	parser.add_argument('--rs',type=int, default='0', help='set random seed to ensure uniform intial points for better comparison')
 	parser.add_argument('--save_checkpoints_training', help='set to false to save space when running lots of experiments')
 
 	args = parser.parse_args()
@@ -66,8 +69,11 @@ if __name__ == "__main__":
 							args.save_checkpoints_training,
 							args.batch_size,
 							args.verbose,
-							args.small_model,
-							args.num_action_repeats
+							args.model_size,
+							args.num_action_repeats,
+							args.rs,
+							args.planning_horizon,
+							args.hidden_size
 						)
 	elif args.algo == 'reinforce':
 		get_data.main(
@@ -88,7 +94,8 @@ if __name__ == "__main__":
 						args.batch_size, #I don't think this is being used anywhere
 						args.verbose,
 						args.extra_dims_stable,
-						args.small_model
+						args.model_size,
+						args.rs
 					)
 
 

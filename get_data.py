@@ -377,6 +377,9 @@ def plan_and_train(P_hat, policy_estimator, model_opt, policy_optimizer, num_sta
 		else:
 			raise NotImplementedError
 
+		if global_step % verbose == 0:
+			np.save(os.path.join(file_location,'reinforce_loss_model_{}_env_{}_state{}_salient{}_horizon{}_traj{}_{}'.format(model_type, 'lin-dyn', states_dim, salient_states_dim, R_range, max_actions + 1, file_id)), np.asarray(losses))
+
 		#check paml loss with current policy, after model training
 		kwargs['train'] = False
 		kwargs['use_model'] = True
@@ -512,11 +515,12 @@ def main(
 			batch_size,
 			verbose,
 			extra_dims_stable,
-			small_model
+			model_size,
+			rs
 		):
 	# rs = 2
-	# torch.manual_seed(rs)
-	# np.random.seed(rs)	
+	torch.manual_seed(rs)
+	np.random.seed(rs)	
 	# file_location = '/h/abachiro/paml/results'
 	file_location = '/scratch/gobi1/abachiro/paml_results'
 
@@ -553,7 +557,7 @@ def main(
 	policy_optimizer = optim.Adam(policy_estimator.parameters(), lr=0.0001)
 	# policy_estimator.load_state_dict(torch.load('policy_reinforce_use_model_True_horizon20_traj21.pth',map_location=device))
 
-	P_hat = DirectEnvModel(states_dim, actions_dim, MAX_TORQUE, mult=action_multiplier, small=small_model)#, action_multiplier=0.1)
+	P_hat = DirectEnvModel(states_dim, actions_dim, MAX_TORQUE, mult=action_multiplier, model_size=model_size)#, action_multiplier=0.1)
 	P_hat.double()
 	# P_hat.load_state_dict(torch.load('trained_model_paml_lindyn_horizon5_traj6.pth', map_location=device))
 	# P_hat.load_state_dict(torch.load('1model_paml_checkpoint_train_False_lin_dyn_horizon20_traj21_using1states.pth', map_location=device))

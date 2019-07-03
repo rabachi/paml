@@ -14,6 +14,7 @@ import pdb
 from utils import *
 from collections import namedtuple
 import random
+import gym
 
 
 device='cpu'
@@ -23,6 +24,37 @@ def init_weights(m):
 		nn.init.normal_(m.weight, mean=0., std=0.1)
 		nn.init.constant_(m.bias, 0.1)
 		
+
+class AddExtraDims(gym.ObservationWrapper):
+    """ Wrap action """
+    def __init__(self, env, extra_dims):
+        super(AddExtraDims, self).__init__(env)
+
+        self.extra_dims = extra_dims
+
+    def observation(self, observation):
+        new_observation = self.add_irrelevant_features(observation, self.extra_dims, noise_level=0.4)
+        return new_observation
+
+    def add_irrelevant_features(self, x, extra_dim, noise_level = 0.4):
+        x_irrel= noise_level*np.random.randn(1, extra_dim).reshape(-1,)
+        return np.hstack([x, x_irrel])
+
+
+# https://github.com/openai/gym/blob/master/gym/core.py
+class NormalizedEnv(gym.ActionWrapper):
+    """ Wrap action """
+
+    def _action(self, action):
+        act_k = (self.action_space.high - self.action_space.low)/ 2.
+        act_b = (self.action_space.high + self.action_space.low)/ 2.
+        return act_k * action + act_b
+
+    def _reverse_action(self, action):
+        act_k_inv = 2./(self.action_space.high - self.action_space.low)
+        act_b = (self.action_space.high + self.action_space.low)/ 2.
+        return act_k_inv * (action - act_b)
+
 
 Transition = namedtuple('Transition',('state', 'next_state', 'action', 'reward'))
 
@@ -158,12 +190,13 @@ class Policy(nn.Module):
 
 
 class DeterministicPolicy(nn.Module):
-	def __init__(self, in_dim, out_dim, max_action):#-0.8 GOOD
+	def __init__(self, in_dim, out_dim, max_action): 
 		super(DeterministicPolicy, self).__init__()
 		self.n_actions = out_dim
 		self.max_action = max_action
 
 		self.lin1 = nn.Linear(in_dim, 64)
+		# self.lin1 = nn.Linear(in_dim, out_dim)
 		self.relu = nn.ReLU()
 
 		self.theta = nn.Linear(64, 64)
@@ -171,11 +204,13 @@ class DeterministicPolicy(nn.Module):
 
 		torch.nn.init.xavier_uniform_(self.lin1.weight)
 		torch.nn.init.xavier_uniform_(self.theta.weight)
+		torch.nn.init.xavier_uniform_(self.action_head.weight)
 
 	def forward(self, x):
 		x = self.relu(self.lin1(x))
 		x = self.relu(self.theta(x))
 		x = nn.Tanh()(self.action_head(x))
+		# x = nn.Tanh()(self.lin1(x))
 		return x
 
 	def sample_action(self, x):
@@ -282,28 +317,30 @@ class OUNoise(object):
         self.state = x + dx
         return self.state
     
-    def get_action(self, action, t=0):
+    def get_action(self, action, t=0, multiplier=1.0):
         ou_state = self.evolve_state()
         self.sigma = self.max_sigma - (self.max_sigma - self.min_sigma) * min(1.0, t / self.decay_period)
-        return np.clip(action + ou_state, self.low, self.high)
+        return np.clip(action + multiplier*ou_state, self.low, self.high)
+        # return np.clip(action + ou_state, self.low, self.high)
 
-# class OrnsteinUhlenbeckActionNoise:
-# 	def __init__(self, mu=0, sigma=0.2, theta=.15, dt=1e-2, x0=None):
-# 		self.theta = theta
-# 		self.mu = mu
-# 		self.sigma = sigma
-# 		self.dt = dt
-# 		self.x0 = x0
-# 		self.reset()
 
-# 	def __call__(self):
-# 		x = self.x_prev + self.theta * (self.mu - self.x_prev) * self.dt + self.sigma * np.sqrt(self.dt) * np.random.normal(size=self.mu.shape)
-# 		self.x_prev = x
-# 		return x
+class OrnsteinUhlenbeckActionNoise:
+	def __init__(self, mu=0, sigma=0.3, theta=.15, dt=1e-3, x0=None):
+		self.theta = theta
+		self.mu = mu
+		self.sigma = sigma
+		self.dt = dt
+		self.x0 = x0
+		self.reset()
 
-# 	def reset(self):
-# 		self.x_prev = self.x0 if self.x0 is not None else np.zeros_like(self.mu)
+	def __call__(self):
+		x = self.x_prev + self.theta * (self.mu - self.x_prev) * self.dt + self.sigma * np.sqrt(self.dt) * np.random.normal(size=self.mu.shape)
+		self.x_prev = x
+		return x
 
-# 	def __repr__(self):
-# 		return 'OrnsteinUhlenbeckActionNoise(mu={}, sigma={})'.format(self.mu, self.sigma)
+	def reset(self):
+		self.x_prev = self.x0 if self.x0 is not None else np.zeros_like(self.mu)
+
+	def __repr__(self):
+		return 'OrnsteinUhlenbeckActionNoise(mu={}, sigma={})'.format(self.mu, self.sigma)
 

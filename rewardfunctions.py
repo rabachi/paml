@@ -40,11 +40,52 @@ def get_reward_fn(env, states_tensor, actions_tensor):
 
 		return -costs#.unsqueeze(2)
 
-	if env.spec.id == 'cc777c9bc75a99b8b1d5bc2851c1063b-v0': #pretty ugly but this is what I get for dm_control
+	elif env.spec.id == 'HalfCheetah-v2': 
+		dt = 0.05 #from stepping through env
+		xposbefore = states_tensor[:,0]
+		# xposbefore = self.sim.data.qpos[0]
+		# self.do_simulation(action, self.frame_skip) #can't do this step because this is also for stepping through environment, but I actually HAVE the next states, and can compare them directly here 
+		xposafter = states_tensor #self.sim.data.qpos[0]
+		ob = self._get_obs()
+
+		reward_ctrl = - 0.1 * torch.square(actions_tensor).sum()
+
+		reward_run = (xposafter - xposbefore)/dt
+
+		reward = reward_ctrl + reward_run
+
+
+		def _get_obs(self):
+			return np.concatenate([
+				self.sim.data.qpos.flat[1:],
+				self.sim.data.qvel.flat,
+			])
+
+	elif env.spec.id == 'dm-Pendulum-v0':
 		COS_BND = np.cos(np.deg2rad(8))
 
 		rewards = (torch.le(states_tensor[:,:,0], 1) == torch.ge(states_tensor[:,:,0], COS_BND))
 		return rewards.double()
+
+	elif env.spec.id == 'dm-Cartpole-swingup-v0': #TAKES NEXT STATE FOR REWARD NOT CURRENT STATE
+		rewards_to_return = torch.zeros(states_tensor.shape[0])
+		for d in range(states_tensor.shape[0]):
+			pole_angle_cosine = states_tensor[d,1] 
+			upright = (pole_angle_cosine + 1) / 2 
+			centered = tolerance(states_tensor[d,0], margin=2) 
+			centered = (1 + centered) / 2 
+			small_control = tolerance(actions_tensor[d,:], margin=1,
+		                                value_at_margin=0,
+		                                sigmoid='quadratic')[0]
+			small_control = (4 + small_control) / 5
+			small_velocity = tolerance(states_tensor[d,4], margin=5).min()
+			small_velocity = (1 + small_velocity) / 2 
+		
+			rewards_to_return[d] = upright.mean() * small_control * small_velocity * centered #torch.from_numpy(centered)
+			# OrderedDict([('position', array([ 0.01871485, -0.99999419, -0.00340747])), ('velocity', array([0.04293839, 0.06518433]))])
+
+		return rewards_to_return
+
 
 	elif env.spec.id == 'CartPole-v0':
 		theta_threshold_radians = 12 * 2 * np.pi / 360
@@ -73,31 +114,34 @@ def get_reward_fn(env, states_tensor, actions_tensor):
   #           self.steps_beyond_done += 1
   #           reward = 0.0
 
-	elif env.spec.id == 'dm_cartpole_balance':
+  	# else:
+  	# 	raise NotImplementedError
 
-		states = states_tensor.cpu().detach().numpy()
-		print(states)
-		states = np.swapaxes(np.atleast_3d(states), 1,2)
-		pole_angle_cosine = states[:,:,1]
-		cart_position = states[:,:,0]
-		angular_vel = states[:,:,]
+	# elif env.spec.id == 'dm_cartpole_balance':
 
-		control = actions_tensor.cpu().detach().numpy().squeeze()
+	# 	states = states_tensor.cpu().detach().numpy()
+	# 	print(states)
+	# 	states = np.swapaxes(np.atleast_3d(states), 1,2)
+	# 	pole_angle_cosine = states[:,:,1]
+	# 	cart_position = states[:,:,0]
+	# 	angular_vel = states[:,:,]
+
+	# 	control = actions_tensor.cpu().detach().numpy().squeeze()
 
 
-		upright = (pole_angle_cosine + 1) / 2
+	# 	upright = (pole_angle_cosine + 1) / 2
 
-		centered = tolerance(cart_position, margin=2)
-		centered = (1 + centered) / 2
-		small_control = tolerance(actions_tensor, margin=1,
-						value_at_margin=0.000000001,
-						sigmoid='quadratic')[0]
-		small_control = (4 + small_control) / 5
+	# 	centered = tolerance(cart_position, margin=2)
+	# 	centered = (1 + centered) / 2
+	# 	small_control = tolerance(actions_tensor, margin=1,
+	# 					value_at_margin=0.000000001,
+	# 					sigmoid='quadratic')[0]
+	# 	small_control = (4 + small_control) / 5
 
-		small_velocity = tolerance(angular_vel, margin=5).min()
-		small_velocity = (1 + small_velocity) / 2
+	# 	small_velocity = tolerance(angular_vel, margin=5).min()
+	# 	small_velocity = (1 + small_velocity) / 2
 
-		return torch.FloatTensor(np.expand_dims(upright.mean(axis=0),axis=1) * small_control * small_velocity * centered.T)
+	# 	return torch.FloatTensor(np.expand_dims(upright.mean(axis=0),axis=1) * small_control * small_velocity * centered.T)
 
 
 	return 0
@@ -140,8 +184,7 @@ def tolerance(x, bounds=(0.0, 0.0), margin=0.0, sigmoid='gaussian',
 		value = np.where(in_bounds, 1.0, 0.0)
 	else:
 		d = np.where(x < lower, lower - x, x - upper) / margin
-
-	value = np.where(in_bounds, 1.0, _sigmoids(d, value_at_margin, sigmoid))
+		value = np.where(in_bounds, 1.0, _sigmoids(d, value_at_margin, sigmoid))
 
 	return float(value) if np.isscalar(x) else value
 
@@ -163,10 +206,10 @@ def _sigmoids(x, value_at_1, sigmoid):
 		if not 0 <= value_at_1 < 1:
 			raise ValueError('`value_at_1` must be nonnegative and smaller than 1, '
 				'got {}.'.format(value_at_1))
-		else:
-			if not 0 < value_at_1 < 1:
-				raise ValueError('`value_at_1` must be strictly between 0 and 1, '
-					'got {}.'.format(value_at_1))
+	else:
+		if not 0 < value_at_1 < 1:
+			raise ValueError('`value_at_1` must be strictly between 0 and 1, '
+				'got {}.'.format(value_at_1))
 
 	if sigmoid == 'gaussian':
 		scale = np.sqrt(-2 * np.log(value_at_1))

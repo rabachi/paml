@@ -19,7 +19,7 @@ from utils import *
 import dm_control2gym
 device = 'cpu'
 
-def pre_train_critic(actor, critic, dataset, epochs_value, discount, batch_size, q_optimizer, value_lr_schedule, max_actions, states_dim, actions_dim, verbose=10):
+def pre_train_critic(actor, critic, dataset, epochs_value, discount, batch_size, q_optimizer, value_lr_schedule, states_dim, actions_dim, salient_states_dim, verbose=10):
 	MSE = nn.MSELoss()
 	# TAU=0.001
 	TAU=0.001
@@ -35,7 +35,7 @@ def pre_train_critic(actor, critic, dataset, epochs_value, discount, batch_size,
 		rewards_tensor = torch.tensor([samp.reward for samp in batch]).double().to(device).unsqueeze(1)
 		actions_tensor = torch.tensor([samp.action for samp in batch]).double().to(device)
 
-		actions_next = actor.sample_action(states_next)
+		actions_next = actor.sample_action(states_next[:,:salient_states_dim])
 		target_q = target_critic(states_next, actions_next)
 		y = rewards_tensor + discount * target_q.detach() #detach to avoid backprop target
 		q = critic(states_prev, actions_tensor)
@@ -45,7 +45,8 @@ def pre_train_critic(actor, critic, dataset, epochs_value, discount, batch_size,
 		loss.backward()
 		nn.utils.clip_grad_value_(critic.parameters(), 20.0)
 		q_optimizer.step()
-		value_lr_schedule.step()
+		if value_lr_schedule is not None:
+			value_lr_schedule.step()
 
 		#soft update the target critic
 		for target_param, param in zip(target_critic.parameters(), critic.parameters()):
@@ -56,257 +57,24 @@ def pre_train_critic(actor, critic, dataset, epochs_value, discount, batch_size,
 
 	return critic #finish when target has converged
 
-def pre_train_critic_2(actor, critic, dataset, validation_dataset, epochs_value, discount, batch_size, q_optimizer, value_lr_schedule, max_actions, verbose):
-	best_loss = 10000
-	MSE = nn.MSELoss()
-	TAU=0.0001
-	R_range = 1
 
-	states_dim = 3
-	actions_dim = 1
-	target_critic = Value(states_dim, actions_dim)
-	target_critic.double()
-
-	for target_param, param in zip(target_critic.parameters(), critic.parameters()):
-		target_param.data.copy_(param.data)
-
-	for i in range(epochs_value):
-		batch = dataset.sample(batch_size)
-
-		states_prev = torch.tensor([samp.state for samp in batch]).double().to(device)
-		states_next = torch.tensor([samp.next_state for samp in batch]).double().to(device)
-		#target_q = torch.tensor([samp.reward for samp in batch]).double().to(device).unsqueeze(1)
-		rewards_tensor = torch.tensor([samp.reward for samp in batch]).double().to(device).unsqueeze(1)
-		actions_tensor = torch.tensor([samp.action for samp in batch]).double().to(device)
-
-		#compute loss for critic
-		# actions_next = target_actor.sample_action(states_next)
-		# target_q = target_critic(torch.cat((states_next, actions_next), dim=1))
-		actions_next = actor.sample_action(states_next)
-		target_q = target_critic(torch.cat((states_next, actions_next), dim=1))
-		y = rewards_tensor + discount * target_q.detach() #detach to avoid backprop target
-		q = critic(torch.cat((states_prev, actions_tensor),dim=1))
-
-		q_optimizer.zero_grad()
-		q_loss = MSE(q, y)
-		q_loss.backward()
-		q_optimizer.step()
-		value_lr_schedule.step()
-
-		# save_stats(true_returns, true_r_list, true_a_list, true_x_curr, value=true_value, prefix='true_actorcritic_')
-		if i % verbose == 0:
-			print('Epoch: {:4d} | Value estimator loss: {:.5f}'.format(i,q_loss.detach().cpu()))
-
-		for target_param, param in zip(target_critic.parameters(), critic.parameters()):
-			target_param.data.copy_(target_param.data * (1.0 - TAU) + param.data * TAU)
-
-		if q_loss < best_loss:
-			torch.save(critic.state_dict(), 'critic_horizon{}_traj{}.pth'.format(R_range, max_actions+1))
-			best_loss = q_loss.detach()
-
-		if (i % verbose*3) == 0 and validation_dataset is not None: #check performance on validation data
-			with torch.no_grad():
-				val_batch = validation_dataset.sample(batch_size)
-
-				states_prev = torch.tensor([samp.state for samp in val_batch]).double().to(device)
-				states_next = torch.tensor([samp.next_state for samp in val_batch]).double().to(device)
-				#target_q = torch.tensor([samp.reward for samp in batch]).double().to(device).unsqueeze(1)
-				rewards_tensor = torch.tensor([samp.reward for samp in val_batch]).double().to(device).unsqueeze(1)
-				actions_tensor = torch.tensor([samp.action for samp in val_batch]).double().to(device)
-
-				#compute loss for critic
-				# actions_next = target_actor.sample_action(states_next)
-				# target_q = target_critic(torch.cat((states_next, actions_next), dim=1))
-				actions_next = actor.sample_action(states_next)
-				target_q = target_critic(torch.cat((states_next, actions_next), dim=1))
-				y = rewards_tensor + discount * target_q.detach() #detach to avoid backprop target
-				q = critic(torch.cat((states_prev, actions_tensor),dim=1))
-
-				val_q_loss = MSE(q, y)
-				print('Validation value estimator loss: {:.5f}'.format(val_q_loss.cpu()))
-
-	with torch.no_grad():
-		batch = dataset.sample(batch_size)
-
-		states_prev = torch.tensor([samp.state for samp in batch]).double().to(device)
-		states_next = torch.tensor([samp.next_state for samp in batch]).double().to(device)
-		#target_q = torch.tensor([samp.reward for samp in batch]).double().to(device).unsqueeze(1)
-		rewards_tensor = torch.tensor([samp.reward for samp in batch]).double().to(device).unsqueeze(1)
-		actions_tensor = torch.tensor([samp.action for samp in batch]).double().to(device)
-
-		#compute loss for critic
-		# actions_next = target_actor.sample_action(states_next)
-		# target_q = target_critic(torch.cat((states_next, actions_next), dim=1))
-		actions_next = actor.sample_action(states_next)
-		target_q = target_critic(torch.cat((states_next, actions_next), dim=1))
-		y = rewards_tensor + discount * target_q.detach() #detach to avoid backprop target
-		q = critic(torch.cat((states_prev, actions_tensor),dim=1))
-
-		q_loss = nn.MSELoss()(q, y)
-		print('inside function: ', q_loss.numpy())
-
-	return target_critic
-
-
-def actor_critic_paml_train(
-							P_hat, 
-							actor, 
-							critic,
-							env,
-							noise,
-							epsilon,
-							# target_critic,
-							# q_optimizer,
-							opt, 
-							num_episodes, 
-							num_starting_states, 
-							batch_size,
-							states_dim, 
-							salient_states_dim,
-							actions_dim, 
-							use_model, 
-							discount, 
-							max_actions, 
-							train, 
-							lr,
-							num_iters,
-							losses,
-							dataset,
-							verbose,
-							save_checkpoints,
-							file_location,
-							file_id
-							):
-	best_loss = 15000
-	env_name = env.spec.id
-	# batch_size = 64
-	R_range = 1
-	unroll_num = max_actions
-	end_of_trajectory = 1
-	num_iters = num_iters if train else 1
-	MSE = nn.MSELoss()
-	noise.reset()
-	# noise = OUNoise(env.action_space)
-	# noise = OrnsteinUhlenbeckActionNoise(mu=np.zeros(actions_dim))	
-	model_opt = optim.SGD(P_hat.parameters(), lr=lr)#, momentum=0.90, nesterov=True)
-
-	# epsilon = 1
-	# epsilon_decay = 1./100000
-	ell = 0
-	saved = False
-	for i in range(num_iters):
-		batch = dataset.sample(batch_size)
-
-		true_states_prev = torch.tensor([samp.state for samp in batch]).double().to(device)
-		true_states_next = torch.tensor([samp.next_state for samp in batch]).double().to(device)
-		true_rewards_tensor = torch.tensor([samp.reward for samp in batch]).double().to(device).unsqueeze(1)
-		true_actions_tensor = torch.tensor([samp.action for samp in batch]).double().to(device)
-
-		#calculate true gradients
-		actor.zero_grad()
-
-		#compute loss for actor
-		true_policy_loss = -critic(true_states_next, actor.sample_action(true_states_next))
-		true_term = true_policy_loss.mean()
-
-		# save_stats(None, true_rewards_tensor, None, true_states_next, value=None, prefix='true_actorcritic_')
-		true_pe_grads = torch.DoubleTensor()
-		true_pe_grads_attached = grad(true_term.mean(), actor.parameters(), create_graph=True)
-		for g in range(len(true_pe_grads_attached)):
-			true_pe_grads = torch.cat((true_pe_grads,true_pe_grads_attached[g].detach().view(-1)))
-
-		#probably don't need these ... .grad is not accumulated with the grad() function
-		actor.zero_grad()
-		step_state = torch.cat((true_states_prev, true_actions_tensor),dim=1).unsqueeze(1)
-	
-		if use_model:
-			model_x_curr, model_x_next, model_a_list, model_r_list, _ = P_hat.unroll(step_state, actor, states_dim, None, steps_to_unroll=1, continuous_actionspace=True, use_model=True, policy_states_dim=salient_states_dim, noise=noise, epsilon=epsilon, epsilon_decay=None, env=env)
-
-			#can remove these after unroll is fixed
-			model_x_curr = model_x_curr.squeeze(1).squeeze(1)
-			model_x_next = model_x_next.squeeze(1).squeeze(1)
-			model_r_list = model_r_list.squeeze()[:,1:]
-			model_a_list = model_a_list.squeeze(1).squeeze(1)
-			##### DO ACTIONS ABOVE MESS WITH P_HAT GRADIENTS?!
-		else:
-			model_batch = dataset.sample(batch_size)
-			model_x_curr = torch.tensor([samp.state for samp in model_batch]).double().to(device)
-			model_x_next = torch.tensor([samp.next_state for samp in model_batch]).double().to(device)
-			model_r_list = torch.tensor([samp.reward for samp in model_batch]).double().to(device).unsqueeze(1)
-			model_a_list = torch.tensor([samp.action for samp in model_batch]).double().to(device)
-
-		model_policy_loss = -critic(model_x_next, actor.sample_action(model_x_next))
-		model_term = model_policy_loss.mean()
-		# save_stats(None, model_r_list, model_a_list, model_x_next, value=None, prefix='model_actorcritic_')
-		model_pe_grads = torch.DoubleTensor()
-		model_pe_grads_split = grad(model_term.mean(),actor.parameters(), create_graph=True)
-		for g in range(len(model_pe_grads_split)):
-			model_pe_grads = torch.cat((model_pe_grads,model_pe_grads_split[g].view(-1)))
-		# cos = nn.CosineSimilarity(dim=0, eps=1e-6)
-		# loss = 1-cos(true_pe_grads,model_pe_grads)
-		loss = torch.sqrt((true_pe_grads-model_pe_grads).pow(2).sum())#/num_starting_states)
-
-
-		if loss.detach().cpu() < best_loss and use_model:
-			#Save model and losses so far
-			#if save_checkpoints:
-			torch.save(P_hat.state_dict(), os.path.join(file_location,'act_model_paml_state{}_salient{}_checkpoint_train_{}_{}_horizon{}_traj{}_{}.pth'.format(states_dim, salient_states_dim, train, env_name, R_range, max_actions + 1, file_id)))
-			saved = True
-			if save_checkpoints:
-				np.save(os.path.join(file_location,'act_loss_paml_state{}_salient{}_checkpoint_train_{}_{}_horizon{}_traj{}_{}'.format(states_dim, salient_states_dim, train, env_name, R_range, max_actions + 1, file_id)), np.asarray(losses))
-
-			best_loss = loss.detach().cpu()
-
-		#update model
-		if train: 
-			opt.zero_grad()
-
-			loss.backward()
-			nn.utils.clip_grad_value_(P_hat.parameters(), 5.0)
-			opt.step()
-
-			if torch.isnan(torch.sum(P_hat.fc1.weight.data)):
-				print('weight turned to nan, check gradients')
-				pdb.set_trace()
-
-		losses.append(loss.data.cpu())
-		# lr_schedule.step()
-
-		if train and i < 1: #and j < 1 
-			initial_loss = losses[0]#.data.cpu()
-			print('initial_loss',initial_loss)
-
-		if train:
-			if (i % verbose == 0) or (i == num_iters - 1):
-				print("LR: {:.5f} | batch_num: {:5d} | critic ex val: {:.3f} | paml_loss: {:.5f}".format(lr, i, true_policy_loss.mean().data.cpu(), loss.data.cpu()))
-		else: 
-			print("-----------------------------------------------------------------------------------------------------")
-			print("Validation loss model: {} | R_range: {:3d} | batch_num: {:5d} | average validation paml_loss = {:.7f}".format(use_model, R_range, i, loss.data.cpu()))
-			print("-----------------------------------------------------------------------------------------------------")
-	
-	if train and saved:
-		P_hat.load_state_dict(torch.load(os.path.join(file_location,'act_model_paml_state{}_salient{}_checkpoint_train_{}_{}_horizon{}_traj{}_{}.pth'.format(states_dim, salient_states_dim, train, env_name, R_range, max_actions + 1, file_id)), map_location=device))
-
-	return P_hat, loss.data.cpu()
-
-
-def actor_critic_DDPG(env, actor, noise, critic, real_dataset, batch_size, num_starting_states, max_actions, states_dim, salient_states_dim, discount, use_model, train, verbose, all_rewards, epsilon, epsilon_decay, value_lr_schedule, file_location, file_id, num_action_repeats, planning_horizon=1, P_hat=None, model_type='paml', save_checkpoints=False):
+def actor_critic_DDPG(env, actor, noise, critic, real_dataset, batch_size, num_starting_states, max_actions, states_dim, salient_states_dim, discount, use_model, train, verbose, all_rewards, epsilon, epsilon_decay, value_lr_schedule, file_location, file_id, num_action_repeats, planning_horizon=1, P_hat=None, model_type='paml', save_checkpoints=False, rho_ER=0.5):
  
 	starting_states = num_starting_states
 	env_name = env.spec.id
 	max_torque = float(env.action_space.high[0])
 
 	#rho = fraction of data used from experience replay
-	rho_ER = 0.5
+	# rho_ER = 0.5
 
 	random_start_frac = 0.2 #will also use search control that searches near previously seen states
 	# random_around_ER_frac = 0.8
 	# from_ER_frac = 1.0 - random_start_frac - random_around_ER_frac
-	radius = np.pi/2.#0.52
+	radius = 0.49#np.pi/2.#0.52
 
 	actions_dim = env.action_space.shape[0]
 
-	R_range = 1
+	R_range = planning_horizon
 
 	# #For Pendulum
 	# TAU=0.001      #Target Network HyperParameters
@@ -329,6 +97,7 @@ def actor_critic_DDPG(env, actor, noise, critic, real_dataset, batch_size, num_s
 
 	# noise = OrnsteinUhlenbeckActionNoise(mu=np.zeros(actions_dim))
 	max_torque = float(env.action_space.high[0])
+	stablenoise = StableNoise(states_dim, salient_states_dim, 0.98)
 
 	# batch_size = 64
 	best_loss = 10
@@ -336,13 +105,16 @@ def actor_critic_DDPG(env, actor, noise, critic, real_dataset, batch_size, num_s
 	MSE = nn.MSELoss()
 	# actor = DeterministicPolicy(states_dim, actions_dim, max_torque).double()
 	# critic = Value(states_dim, actions_dim).double()
-	critic_optimizer  = optim.Adam(critic.parameters(), lr=LRC)
-	if value_lr_schedule is None:
-		value_lr_schedule = torch.optim.lr_scheduler.MultiStepLR(critic_optimizer, milestones=[1500,3000], gamma=0.1)
+	critic_optimizer  = optim.Adam(critic.parameters(), lr=LRC, weight_decay=1e-2)
+	# if value_lr_schedule is None:
+		# value_lr_schedule = torch.optim.lr_scheduler.MultiStepLR(critic_optimizer, milestones=[7000,12000,20000], gamma=0.1)
+		# value_lr_schedule = torch.optim.lr_scheduler.MultiStepLR(critic_optimizer, milestones=[7000,9000,12000], gamma=0.1)
+		# value_lr_schedule = torch.optim.lr_scheduler.MultiStepLR(critic_optimizer, milestones=[100,000], gamma=0.1)
 	actor_optimizer = optim.Adam(actor.parameters(), lr=LRA)
 
 	#initialize target_critic and target_actor
-	target_actor = DeterministicPolicy(states_dim, actions_dim, max_torque).double()
+	# target_actor = DeterministicPolicy(states_dim, actions_dim, max_torque).double()
+	target_actor = DeterministicPolicy(salient_states_dim, actions_dim, max_torque).double()
 	target_critic = Value(states_dim, actions_dim).double()
 	for target_param, param in zip(target_critic.parameters(), critic.parameters()):
 		target_param.data.copy_(param.data)
@@ -351,7 +123,8 @@ def actor_critic_DDPG(env, actor, noise, critic, real_dataset, batch_size, num_s
 		target_param.data.copy_(param.data)
 
 	dataset = ReplayMemory(1000000)
-	render = False
+
+	render = True if use_model and P_hat.model_size == 'cnn' else False 
 	critic_loss = torch.tensor(2)
 	policy_loss = torch.tensor(2)
 	best_rewards = -np.inf
@@ -359,9 +132,12 @@ def actor_critic_DDPG(env, actor, noise, critic, real_dataset, batch_size, num_s
 		noise.reset()
 		# epsilon *= noise_decay**ep
 		# epsilon -= epsilon_decay
-		epsilon = epsilon_original
+		# epsilon = epsilon_original
 		if not use_model:
 			state = env.reset()
+			if env.spec.id != 'lin-dyn-v0':
+				state = stablenoise.get_obs(state, 0)
+
 			states = [state]
 			actions = []
 			rewards = []
@@ -369,17 +145,20 @@ def actor_critic_DDPG(env, actor, noise, critic, real_dataset, batch_size, num_s
 			for timestep in range(max_actions):
 				if get_new_action:
 					# epsilon -= epsilon_decay
-					action = actor.sample_action(torch.DoubleTensor(state)).detach().numpy()
+					action = actor.sample_action(torch.DoubleTensor(state[:salient_states_dim])).detach().numpy()
 					#action += noise()*max(0, epsilon) #try without noise
 					#action = np.clip(action, -1., 1.)
 					action = noise.get_action(action, timestep)
 					get_new_action = False
 					action_counter = 1
-
+				
 				state_prime, reward, done, _ = env.step(action)
 
+				if env.spec.id != 'lin-dyn-v0':
+					state_prime = stablenoise.get_obs(state_prime, timestep + 1)
+
 				if render:
-					env.render()
+					env.render(mode='pixels')
 
 				actions.append(action)
 				states.append(state_prime)
@@ -390,74 +169,74 @@ def actor_critic_DDPG(env, actor, noise, critic, real_dataset, batch_size, num_s
 
 				get_new_action = True if action_counter == num_action_repeats else False
 				action_counter += 1
- 				
+
  				#former indentation level
+				if len(dataset) > batch_size:#for iteration in range(int(np.floor(max_actions/batch_size))):#
+					batch = dataset.sample(batch_size)
 
-			for iteration in range(int(np.floor(max_actions/batch_size))):#if len(dataset) > batch_size:
-				batch = dataset.sample(batch_size)
+					states_prev = torch.tensor([samp.state for samp in batch]).double().to(device)
+					states_next = torch.tensor([samp.next_state for samp in batch]).double().to(device)
+					rewards_tensor = torch.tensor([samp.reward for samp in batch]).double().to(device).unsqueeze(1)
+					actions_tensor = torch.tensor([samp.action for samp in batch]).double().to(device)
+					actions_next = target_actor.sample_action(states_next[:,:salient_states_dim])
+					#Compute target Q value
+					target_Q = target_critic(states_next, actions_next)
+					target_Q = rewards_tensor + discount * target_Q.detach()
+					
+					#Compute current Q estimates
+					current_Q = critic(states_prev, actions_tensor)
+					critic_loss = MSE(current_Q, target_Q)
 
-				states_prev = torch.tensor([samp.state for samp in batch]).double().to(device)
-				states_next = torch.tensor([samp.next_state for samp in batch]).double().to(device)
-				rewards_tensor = torch.tensor([samp.reward for samp in batch]).double().to(device).unsqueeze(1)
-				actions_tensor = torch.tensor([samp.action for samp in batch]).double().to(device)
+					critic_optimizer.zero_grad()
+					critic_loss.backward()
+					critic_optimizer.step()
+					if value_lr_schedule is not None:
+						value_lr_schedule.step()
 
-				actions_next = target_actor.sample_action(states_next)
-				
-				#Compute target Q value
-				target_Q = target_critic(states_next, actions_next)
-				target_Q = rewards_tensor + discount * target_Q.detach()
-				
-				#Compute current Q estimates
-				current_Q = critic(states_prev, actions_tensor)
-				critic_loss = MSE(current_Q, target_Q)
+					#compute actor loss
+					policy_loss = -critic(states_prev, actor.sample_action(states_prev[:,:salient_states_dim])).mean()
 
-				critic_optimizer.zero_grad()
-				critic_loss.backward()
-				critic_optimizer.step()
-				# value_lr_schedule.step()
+					#Optimize the actor
+					actor_optimizer.zero_grad()
+					policy_loss.backward()
+					actor_optimizer.step()
 
-				#compute actor loss
-				policy_loss = -critic(states_prev, actor.sample_action(states_prev)).mean()
+					#soft update of the frozen target networks
+					for target_param, param in zip(target_critic.parameters(), critic.parameters()):
+						target_param.data.copy_(target_param.data * (1.0 - TAU) + param.data * TAU)
 
-				#Optimize the actor
-				actor_optimizer.zero_grad()
-				policy_loss.backward()
-				actor_optimizer.step()
-
-				#soft update of the frozen target networks
-				for target_param, param in zip(target_critic.parameters(), critic.parameters()):
-					target_param.data.copy_(target_param.data * (1.0 - TAU) + param.data * TAU)
-
-				for target_param, param in zip(target_actor.parameters(), actor.parameters()):
-					target_param.data.copy_(target_param.data * (1.0 - TAU) + param.data *TAU)
+					for target_param, param in zip(target_actor.parameters(), actor.parameters()):
+						target_param.data.copy_(target_param.data * (1.0 - TAU) + param.data *TAU)
 			# all_rewards.append(sum(rewards))
 		else:
 			if P_hat is None:
 				raise NotImplementedError
 
 			true_batch_size = int(np.floor(rho_ER * batch_size))
-			#use real_dataset here
-			unroll_num = 1
-			ell = 0
-			R_range = 1
+			if true_batch_size > 0:
+				#use real_dataset here
+				unroll_num = 1
+				ell = 0
+				R_range = planning_horizon
 
-			true_batch = real_dataset.sample(true_batch_size)
-			true_x_curr = torch.tensor([samp.state for samp in true_batch]).double().to(device)
-			true_x_next = torch.tensor([samp.next_state for samp in true_batch]).double().to(device)
-			true_a_list = torch.tensor([samp.action for samp in true_batch]).double().to(device)
-			true_r_list = torch.tensor([samp.reward for samp in true_batch]).double().to(device).unsqueeze(1)
+				true_batch = real_dataset.sample(true_batch_size)
+				true_x_curr = torch.tensor([samp.state for samp in true_batch]).double().to(device)
+				true_x_next = torch.tensor([samp.next_state for samp in true_batch]).double().to(device)
+				true_a_list = torch.tensor([samp.action for samp in true_batch]).double().to(device)
+				true_r_list = torch.tensor([samp.reward for samp in true_batch]).double().to(device).unsqueeze(1)
 
-			actions_next = target_actor.sample_action(true_x_next)
-			target_q = target_critic(true_x_next, actions_next)
-			target_q = true_r_list + discount * target_q.detach() #detach to avoid backprop target
-			current_q = critic(true_x_curr, true_a_list)
+				actions_next = target_actor.sample_action(true_x_next[:,:salient_states_dim])
+				target_q = target_critic(true_x_next, actions_next)
+				target_q = true_r_list + discount * target_q.detach() #detach to avoid backprop target
+				current_q = critic(true_x_curr, true_a_list)
 
-			#update critic only with true data
-			critic_optimizer.zero_grad()
-			critic_loss = MSE(target_q, current_q)
-			critic_loss.backward()
-			critic_optimizer.step()
-			value_lr_schedule.step()
+				#update critic only with true data
+				critic_optimizer.zero_grad()
+				critic_loss = MSE(target_q, current_q)
+				critic_loss.backward()
+				critic_optimizer.step()
+				if value_lr_schedule is not None:
+					value_lr_schedule.step()
 
 
 			model_batch_size = batch_size - true_batch_size
@@ -467,6 +246,8 @@ def actor_critic_DDPG(env, actor, noise, critic, real_dataset, batch_size, num_s
 			random_model_x_curr = torch.zeros((random_start_model_batch_size, states_dim)).double()
 			for samp in range(random_start_model_batch_size):
 				s0 = env.reset()
+				if env.spec.id != 'lin-dyn-v0':
+					s0 = stablenoise.get_obs(env.reset(), 0)
 				random_model_x_curr[samp] = torch.from_numpy(s0).double()
 
 			with torch.no_grad():
@@ -490,40 +271,43 @@ def actor_critic_DDPG(env, actor, noise, critic, real_dataset, batch_size, num_s
 				replay_start_random_model_batch_size = model_batch_size - random_start_model_batch_size 
 				replay_model_batch = real_dataset.sample(replay_start_random_model_batch_size)
 				# have to move the states to a random position within a radius, here it's 1
-				# random_pos_delta = np.random.uniform(size=(replay_start_random_model_batch_size, 1), low=-radius, high=radius)#
 
-				if env_name == 'cc777c9bc75a99b8b1d5bc2851c1063b':
-					x1byx0 = torch.from_numpy(np.tan(random_pos_delta)).double()
-					x0 = torch.tensor([replay_model_batch[idx].state[0] for idx in range(len(replay_model_batch))]).unsqueeze(1).double()
-					x1 = x0*x1byx0
-					x2 = torch.tensor([replay_model_batch[idx].state[2] for idx in range(len(replay_model_batch))]).unsqueeze(1).double()
-					replay_model_x_curr = torch.cat((x0,x1,x2),1).double().to(device)
-				else:
-					random_pos_delta = 2*(np.random.random(size = (replay_start_random_model_batch_size, true_x_curr.shape[1])) - 0.5) * radius 
-					replay_model_x_curr = torch.tensor([replay_model_batch[idx].state + random_pos_delta[idx] for idx in range(replay_start_random_model_batch_size)]).double()
-				
-
+				# if env_name == 'dm-Pendulum-v0' and states_dim == salient_states_dim:
+				# 	random_pos_delta = np.random.uniform(size=(replay_start_random_model_batch_size, 1), low=-radius, high=radius)#
+				# 	x1byx0 = torch.from_numpy(np.tan(random_pos_delta)).double()
+				# 	x0 = torch.tensor([replay_model_batch[idx].state[0] for idx in range(len(replay_model_batch))]).unsqueeze(1).double()
+				# 	x1 = x0*x1byx0
+				# 	x2 = torch.tensor([replay_model_batch[idx].state[2] for idx in range(len(replay_model_batch))]).unsqueeze(1).double()
+				# 	replay_model_x_curr = torch.cat((x0,x1,x2),1).double().to(device)
+				# else:
+				random_pos_delta = 2*(np.random.random(size = (replay_start_random_model_batch_size, states_dim)) - 0.5) * radius 
+				replay_model_x_curr = torch.tensor([replay_model_batch[idx].state + random_pos_delta[idx] for idx in range(replay_start_random_model_batch_size)]).double()
 				# replay_model_actions = actor.sample_action(replay_model_x_curr).numpy() #torch.clamp(actor.sample_action(replay_model_x_curr) + torch.from_numpy(noise()*max(0, epsilon)), min=-max_torque, max=max_torque) 
 				# replay_model_actions = torch.from_numpy(noise.get_action(replay_model_actions, 1))
 				# replay_model_x_next = P_hat(torch.cat((replay_model_x_curr, replay_model_actions),1))
 				# replay_model_r_list = get_reward_fn(env, replay_model_x_curr.unsqueeze(1), replay_model_actions.unsqueeze(1))
-
-			states_prev = torch.cat((true_x_curr, random_model_x_curr, replay_model_x_curr), 0)
+			if true_batch_size > 0:
+				states_prev = torch.cat((true_x_curr, random_model_x_curr, replay_model_x_curr), 0)
+			else:
+				states_prev = torch.cat((random_model_x_curr, replay_model_x_curr), 0)
 			# actions_list = torch.cat((true_a_list, random_model_actions, replay_model_actions), 0)
 			states_prime = torch.zeros((batch_size, planning_horizon, states_dim)).double().to(device)
 
 			states_ = states_prev.clone()
 			noise.reset()
 			for p in range(planning_horizon):
-				actions_noiseless = actor.sample_action(states_).detach().numpy() 
-				actions_ = torch.from_numpy(noise.get_action(actions_noiseless, p, multiplier=1.0))
-				states_prime[:, p, :] = P_hat(torch.cat((states_, actions_),1)).detach()
+				actions_noiseless = actor.sample_action(states_[:,:salient_states_dim]).detach().numpy() 
+				actions_ = torch.from_numpy(noise.get_action(actions_noiseless, p, multiplier=0.1))
+
+				states_prime[:, p, :] = P_hat.predict(states_, actions_).detach()
+				# states_prime[:, p, :] = P_hat(torch.cat((states_, actions_),1)).detach() #+ states_
+				
 				# rewards_model.append(get_reward_fn(env, states_.unsqueeze(1), actions_.unsqueeze(1)))
 				states_ = states_prime[:, p, :]
 
 			states_current = torch.cat((states_prev, states_prime[:, :-1, :].contiguous().view(-1, states_dim)), 0)
 			actor_optimizer.zero_grad()
-			policy_loss = -critic(states_current, actor.sample_action(states_current))
+			policy_loss = -critic(states_current, actor.sample_action(states_current[:,:salient_states_dim]))
 			policy_loss = policy_loss.mean()
 			policy_loss.backward()
 			actor_optimizer.step()
@@ -557,10 +341,15 @@ def actor_critic_DDPG(env, actor, noise, critic, real_dataset, batch_size, num_s
 				eval_rewards = []
 				for ep in range(10):
 					state = env.reset()
+					if env.spec.id != 'lin-dyn-v0':
+						state = stablenoise.get_obs(state, 0)
 					episode_rewards = []
 					for timestep in range(max_actions):
-						action = actor.sample_action(torch.DoubleTensor(state)).detach().numpy()
+						action = actor.sample_action(torch.DoubleTensor(state[:salient_states_dim])).detach().numpy()#[:salient_states_dim])).detach().numpy()
 						state_prime, reward, done, _ = env.step(action)
+						if env.spec.id != 'lin-dyn-v0':
+							state_prime = stablenoise.get_obs(state_prime, timestep+1)
+
 						episode_rewards.append(reward)
 						state = state_prime
 					
@@ -581,14 +370,14 @@ def actor_critic_DDPG(env, actor, noise, critic, real_dataset, batch_size, num_s
 	return actor, critic
 
 
-def plan_and_train_ddpg(P_hat, actor, critic, model_opt, num_starting_states, num_episodes, states_dim, salient_states_dim, actions_dim, discount, max_actions, env, lr, num_iters, file_location, file_id, save_checkpoints_training, verbose, batch_size, num_virtual_episodes, model_type, num_action_repeats, epsilon, epsilon_decay, planning_horizon):
+def plan_and_train_ddpg(P_hat, actor, critic, model_opt, num_starting_states, num_episodes, states_dim, salient_states_dim, actions_dim, discount, max_actions, env, lr, num_iters, file_location, file_id, save_checkpoints_training, verbose, batch_size, num_virtual_episodes, model_type, num_action_repeats, epsilon, epsilon_decay, planning_horizon, input_rho):
 	# verbose = 20
 	# batch_size = 64
 	R_range = planning_horizon
 	losses = []
 
 	kwargs = {
-				'P_hat'              : P_hat,
+				# 'P_hat'              : P_hat,
 				'actor'	             : actor, 
 				'critic'	 		 : critic,
 				#'target_critic'	 	 : target_critic,
@@ -603,6 +392,7 @@ def plan_and_train_ddpg(P_hat, actor, critic, model_opt, num_starting_states, nu
 				# 'use_model'			 : False, 
 				'discount'			 : discount, 
 				'max_actions'		 : max_actions, 
+				'planning_horizon'	 : planning_horizon,
 				# 'train'              : train, 
 				'lr'		         : lr,
 				'num_iters'          : num_iters,
@@ -625,12 +415,16 @@ def plan_and_train_ddpg(P_hat, actor, critic, model_opt, num_starting_states, nu
 	kwargs['noise'] = noise
 
 	all_rewards = []
-	epochs_value = 200
+	epochs_value = 1000
 	#value_optimizer = optim.SGD(critic.parameters(), lr=1e-3, momentum=0.90, nesterov=True) 
 	# value_optimizer = optim.SGD(critic.parameters(), lr=1e-5, momentum=0.90, nesterov=True) 
-	value_optimizer = optim.SGD(critic.parameters(), lr=1e-5)#, momentum=0.90, nesterov=True) 
-	value_lr_schedule = torch.optim.lr_scheduler.MultiStepLR(value_optimizer, milestones=[5000,8000], gamma=0.1)
-	lr_schedule = torch.optim.lr_scheduler.MultiStepLR(model_opt, milestones=[1000,4000,6000], gamma=0.1)
+	value_optimizer = optim.SGD(critic.parameters(), lr=5e-4)#optim.Adam(critic.parameters(), lr=1e-4, weight_decay=1e-8)#optim.SGD(critic.parameters(), lr=1e-4)#, momentum=0.90, nesterov=True) 
+	value_lr_schedule = torch.optim.lr_scheduler.MultiStepLR(value_optimizer, milestones=[7000,12000,20000], gamma=0.1)
+	# lr_schedule = torch.optim.lr_scheduler.MultiStepLR(model_opt, milestones=[100000,200000,400000], gamma=0.1)
+	
+	# lr_schedule = torch.optim.lr_scheduler.MultiStepLR(model_opt, milestones=[400000,800000,1000000], gamma=0.1)
+
+	lr_schedule = torch.optim.lr_scheduler.MultiStepLR(model_opt, milestones=[40,100,500], gamma=0.1)
 
 	dataset = ReplayMemory(1000000)
 	max_torque = float(env.action_space.high[0])
@@ -639,25 +433,30 @@ def plan_and_train_ddpg(P_hat, actor, critic, model_opt, num_starting_states, nu
 	total_eps = 10000
 	env_name = env.spec.id
 	true_rewards = []
+	use_pixels = False
+	fractions_real_data_schedule = np.linspace(1.0,0.5,num=50)
 
+	stablenoise = StableNoise(states_dim, salient_states_dim, 0.98)
+	original_batch_size = batch_size
 	while(global_step <= total_eps):#/num_starting_states):
 		# Generating sample trajectories 
 		print("Generating sample trajectories ... epislon is {:.3f}".format(epsilon))
-		dataset, _, new_epsilon = generate_data(env, dataset, actor, num_starting_states, None, max_actions, noise, epsilon, epsilon_decay, num_action_repeats, discount=discount, all_rewards=[])#true_rewards)
-		epsilon = new_epsilon
-		kwargs['epsilon'] = epsilon
-		print(len(dataset))
-		print("Done")
-
+		# dataset, _, new_epsilon = generate_data(env, dataset, actor, num_starting_states, None, max_actions, noise, epsilon, epsilon_decay, num_action_repeats, discount=discount, all_rewards=[])#true_rewards)
+		dataset, _, new_epsilon = generate_data(env, states_dim, dataset, actor, num_starting_states, None, min(200,max_actions), noise, epsilon, epsilon_decay, num_action_repeats, discount=discount, all_rewards=[], use_pixels=(P_hat.model_size=='cnn'))#true_rewards)
+		batch_size = min(original_batch_size, len(dataset))
 		#Evaluate policy without noise
 		eval_rewards = []
 		for ep in range(10):
 			state = env.reset()
+			if env.spec.id != 'lin-dyn-v0':
+				state = stablenoise.get_obs(state, 0)
 			fakes = []
 			episode_rewards = []
 			for timestep in range(max_actions):
-				action = actor.sample_action(torch.DoubleTensor(state)).detach().numpy()
+				action = actor.sample_action(torch.DoubleTensor(state[:salient_states_dim])).detach().numpy()
 				state_prime, reward, done, _ = env.step(action)
+				if env.spec.id != 'lin-dyn-v0':
+					state_prime = stablenoise.get_obs(state_prime, timestep+1)
 				# frewards = get_reward_fn(env, torch.DoubleTensor(state).unsqueeze(0).unsqueeze(1), torch.DoubleTensor(action).unsqueeze(0).unsqueeze(1))
 				# fakes.append(frewards)
 				episode_rewards.append(reward)
@@ -668,24 +467,32 @@ def plan_and_train_ddpg(P_hat, actor, critic, model_opt, num_starting_states, nu
 		true_rewards.append(sum(eval_rewards)/10.)
 
 		print('Average rewards on true dynamics: {:.3f}'.format(true_rewards[-1]))
-
 		torch.save(actor.state_dict(), os.path.join(file_location,'act_policy_{}_state{}_salient{}_checkpoint_{}_horizon{}_traj{}_{}.pth'.format(model_type, states_dim, salient_states_dim, env_name, R_range, max_actions + 1, file_id)))
-			
+					
 		np.save(os.path.join(file_location,'{}_state{}_salient{}_rewards_actorcritic_checkpoint_use_model_False_{}_horizon{}_traj{}_{}'.format(model_type, states_dim, salient_states_dim, env_name, R_range, max_actions + 1, file_id)), np.asarray(true_rewards))
+		# epsilon = new_epsilon
+		kwargs['epsilon'] = epsilon
+		print(len(dataset))
+		# print("Done")
 
 		kwargs['dataset'] = dataset
 		# epochs_value = int(np.ceil(epochs_value * psi))
 
 		# if model_type != 'mle':
-		critic = pre_train_critic(actor, critic, dataset, epochs_value, discount, batch_size, value_optimizer, value_lr_schedule, max_actions, states_dim, actions_dim, verbose=50)
+		# if timestep % 1000 == 0 and ep % 10 == 0:
+			# critic.reset_weights()
+		critic = pre_train_critic(actor, critic, dataset, epochs_value, discount, batch_size, value_optimizer, value_lr_schedule, states_dim, actions_dim, salient_states_dim, verbose=100)
 		kwargs['critic'] = critic
 
-		kwargs['train'] = False
-		kwargs['num_episodes'] = num_episodes
-		kwargs['num_starting_states'] = num_starting_states
-		kwargs['losses'] = []
-		kwargs['use_model'] = False
-		actor_critic_paml_train(**kwargs)
+
+
+		if env_name == 'lin-dyn-v0':
+			kwargs['train'] = False
+			kwargs['num_episodes'] = num_episodes
+			kwargs['num_starting_states'] = num_starting_states
+			kwargs['losses'] = []
+			kwargs['use_model'] = False
+			P_hat.actor_critic_paml_train(**kwargs) 
 
 		# num_iters += 10# int(np.ceil(num_iters * psi))
 		kwargs['train'] = True
@@ -695,30 +502,32 @@ def plan_and_train_ddpg(P_hat, actor, critic, model_opt, num_starting_states, nu
 		kwargs['losses'] = losses
 		kwargs['num_iters'] = num_iters
 		kwargs['use_model'] = True
-		kwargs['P_hat'] = P_hat
+		# kwargs['P_hat'] = P_hat
 
 		if model_type =='mle':
-			P_hat.general_train_mle(actor, dataset, states_dim, salient_states_dim, num_iters, max_actions, model_opt, env_name, losses, batch_size, file_location, file_id, save_checkpoints=save_checkpoints_training, verbose=20, lr_schedule=lr_schedule)
+			# P_hat.general_train_mle(actor, dataset, states_dim, salient_states_dim, num_iters, max_actions, model_opt, env_name, losses, batch_size, file_location, file_id, save_checkpoints=save_checkpoints_training, verbose=20, lr_schedule=lr_schedule)
+			P_hat.general_train_mle(actor, dataset, states_dim, salient_states_dim, num_iters, max_actions, model_opt, env_name, losses, batch_size, file_location, file_id, save_checkpoints=True, verbose=20, lr_schedule=lr_schedule, global_step=global_step)
 
 		elif (model_type == 'paml') or (model_type == 'pamlmean'):
 			# P_hat = DirectEnvModel(states_dim, actions_dim, max_torque).double()
-			if (global_step > 0) and (global_step % 3 == 0):
-				lr = lr / 2.
+			if (global_step > 0) and (global_step % 15 == 0): #for lqr: 8 good
+				lr = lr / 1.01
 			kwargs['lr'] = lr
-			kwargs['P_hat'] = P_hat
-			P_hat, _ = actor_critic_paml_train(**kwargs)
+			# kwargs['P_hat'] = P_hat
+			# P_hat, _ = actor_critic_paml_train(**kwargs)
+			P_hat.actor_critic_paml_train(**kwargs)
 		elif model_type == 'random':
 			P_hat = DirectEnvModel(states_dim, actions_dim, max_torque).double()
-			kwargs['P_hat'] = P_hat
+			# kwargs['P_hat'] = P_hat
 		else:
 			raise NotImplementedError
 
-		kwargs['train'] = False
-		kwargs['use_model'] = True
-		kwargs['P_hat'] = P_hat
-		kwargs['losses'] = []
-		_, loss_paml = actor_critic_paml_train(**kwargs)
-		paml_losses.append(loss_paml)
+		# kwargs['train'] = False
+		# kwargs['use_model'] = True
+		# kwargs['P_hat'] = P_hat
+		# kwargs['losses'] = []
+		# _, loss_paml = actor_critic_paml_train(**kwargs)
+		# paml_losses.append(loss_paml)
 
 		use_model = True
 		# num_virtual_episodes = 600
@@ -738,23 +547,34 @@ def plan_and_train_ddpg(P_hat, actor, critic, model_opt, num_starting_states, nu
 		# 	kwargs['critic'] = critic
 		# 	_, loss_paml = actor_critic_paml_train(**kwargs)
 		# 	paml_losses.append(loss_paml)
-		actor, critic = actor_critic_DDPG(env, actor, noise,critic, dataset, num_virtual_episodes*15, num_virtual_episodes, max_actions, states_dim, salient_states_dim, discount, use_model, train, verbose, all_rewards, epsilon, epsilon_decay, value_lr_schedule, file_location, file_id, num_action_repeats, planning_horizon=planning_horizon, P_hat=P_hat, model_type=model_type, save_checkpoints=save_checkpoints_training)
+		# actor, critic = actor_critic_DDPG(env, actor, noise,critic, dataset, 8, 2*int(np.ceil(num_virtual_episodes/5.0)), max_actions, states_dim, salient_states_dim, discount, use_model, train, verbose, all_rewards, epsilon, epsilon_decay, value_lr_schedule, file_location, file_id, num_action_repeats, planning_horizon=planning_horizon, P_hat=P_hat, model_type=model_type, save_checkpoints=save_checkpoints_training)
 
-		# actor, critic = actor_critic_DDPG(env, actor, noise,critic, dataset, batch_size*2, num_virtual_episodes, max_actions, states_dim, salient_states_dim, discount, use_model, train, verbose, all_rewards, epsilon, epsilon_decay, value_lr_schedule, file_location, file_id, num_action_repeats, planning_horizon=planning_horizon, P_hat=P_hat, model_type=model_type, save_checkpoints=save_checkpoints_training)
+		# rho_ER = fractions_real_data_schedule[global_step] if global_step < 50 else 0.5
+
+
+
+		actor, critic = actor_critic_DDPG(env, actor, noise,critic, dataset, batch_size, num_virtual_episodes, max_actions, states_dim, salient_states_dim, discount, use_model, train, verbose, all_rewards, epsilon, epsilon_decay, value_lr_schedule, file_location, file_id, num_action_repeats, planning_horizon=planning_horizon, P_hat=P_hat, model_type=model_type, save_checkpoints=save_checkpoints_training, rho_ER=input_rho)
 		
+
+
+
+
 		#check paml_loss with the new policy
-		kwargs['train'] = False
-		kwargs['use_model'] = True
-		kwargs['losses'] = []
-		kwargs['P_hat'] = P_hat
-		kwargs['actor'] = actor
-		kwargs['critic'] = critic
-		_, loss_paml = actor_critic_paml_train(**kwargs)
-		paml_losses.append(loss_paml)
+		# kwargs['train'] = False
+		# kwargs['use_model'] = True
+		# kwargs['losses'] = []
+		# kwargs['P_hat'] = P_hat
+		# kwargs['actor'] = actor
+		# kwargs['critic'] = critic
+		# _, loss_paml = actor_critic_paml_train(**kwargs)
+		# paml_losses.append(loss_paml)
 
 		if global_step % log == 0:
 			np.save(os.path.join(file_location,'ac_pamlloss_model_{}_env_{}_state{}_salient{}_horizon{}_traj{}_{}'.format(model_type, env_name, states_dim, salient_states_dim, R_range, max_actions + 1, file_id)), np.asarray(paml_losses))
 		global_step += 1
+
+		# all_rewards.append(sum(rewards))
+
 
 	
 def main(
@@ -777,7 +597,9 @@ def main(
 			num_action_repeats,
 			rs,
 			planning_horizon,
-			hidden_size
+			hidden_size,
+			input_rho,
+			ensemble_size
 		):
 
 	# file_location = '/h/abachiro/paml/results'
@@ -796,13 +618,30 @@ def main(
 		gym.envs.register(id='lin-dyn-v0', entry_point='gym_linear_dynamics.envs:LinDynEnv',)
 		# env = gym.make('gym_linear_dynamics:lin-dyn-v0')
 		env = gym.make('lin-dyn-v0')
+
 	elif env_name == 'Pendulum-v0':
 		if states_dim > salient_states_dim:
-			env = AddExtraDims(NormalizedEnv(gym.make('Pendulum-v0')), states_dim - salient_states_dim)
+			# env = AddExtraDims(NormalizedEnv(gym.make('Pendulum-v0')), states_dim - salient_states_dim)
+			env = gym.make('Pendulum-v0') #NormalizedEnv(gym.make('Pendulum-v0'))
 		else:
-			env = NormalizedEnv(gym.make('Pendulum-v0')) #idk if this is good to do ... normalized env thing
+			env = gym.make('Pendulum-v0')#NormalizedEnv(gym.make('Pendulum-v0')) #idk if this is good to do ... normalized env thing
+
+	elif env_name == 'Reacher-v2':
+		env = gym.make('Reacher-v2') #NormalizedEnv(gym.make('Reacher-v2'))
+
+	elif env_name == 'Swimmer-v2':
+		env = gym.make('Swimmer-v2') #NormalizedEnv(gym.make('Swimmer-v2'))
+
+	elif env_name == 'HalfCheetah-v2':	
+		env = gym.make('HalfCheetah-v2') #NormalizedEnv(gym.make('HalfCheetah-v2'))
+
+	elif env_name == 'dm-Cartpole-swingup-v0':
+		env = dm_control2gym.make(domain_name="cartpole", task_name="swingup")
+		env.spec.id = 'dm-Cartpole-swingup-v0'
+
 	elif env_name == 'dm-Pendulum-v0':
-		 env = NormalizedEnv(dm_control2gym.make(domain_name="pendulum", task_name="swingup"))
+		env = dm_control2gym.make(domain_name="pendulum", task_name="swingup") #NormalizedEnv(dm_control2gym.make(domain_name="pendulum", task_name="swingup"))
+		env.spec.id = 'dm-Pendulum-v0'
 	else:
 		raise NotImplementedError
 
@@ -817,7 +656,6 @@ def main(
 
 	#50
 	num_starting_states = real_episodes if not plan else 10000
-
 	num_episodes = num_eps_per_start #1
 	#batch_size = 64
 	val_num_episodes = 1
@@ -838,7 +676,7 @@ def main(
 	actions_dim = env.action_space.shape[0] #states_dim
 	#salient_states_dim = 3 #states_dim
 	continuous_actionspace = True
-	R_range = 1
+	R_range = planning_horizon
 
 	use_model = True
 	train_value_estimate = False
@@ -855,25 +693,16 @@ def main(
 	# target_actor.double()
 	# target_critic = Value(states_dim, actions_dim)
 	# target_critic.double()
-
-	P_hat = DirectEnvModel(states_dim,actions_dim, max_torque, model_size=model_size, hidden_size=hidden_size)
-	P_hat.double()
-	#P_hat.load_state_dict(torch.load('trained_model_paml_lindyn_horizon6_traj7.pth', map_location=device))
-	#P_hat.load_state_dict(torch.load('act_model_paml_checkpoint_train_True_lin_dyn_horizon5_traj6_using1states.pth', map_location=device))
-
-	# value_optimizer = optim.SGD(critic.parameters(), lr=1e-5, momentum=0.90, nesterov=True) 
-	# value_lr_schedule = torch.optim.lr_scheduler.MultiStepLR(value_optimizer, milestones=[1500,3000], gamma=0.1)
-
-	#1e-4
-	model_opt = optim.SGD(P_hat.parameters(), lr=initial_model_lr, momentum=0.90, nesterov=True)
-	#opt = optim.Adam(P_hat.parameters(), lr=1e-5, weight_decay=1e-8)
-	
+	if model_size == 'cnn':
+		states_dim = (6, states_dim + actions_dim, states_dim)
+		pdb.set_trace()
 
 	if plan:
 		all_rewards = []
 		noise = OUNoise(env.action_space)
 		# noise = OrnsteinUhlenbeckActionNoise(mu=np.zeros(actions_dim))
-		actor = DeterministicPolicy(states_dim, actions_dim, max_torque).double()
+		# actor = DeterministicPolicy(states_dim, actions_dim, max_torque).double()
+		actor = DeterministicPolicy(salient_states_dim, actions_dim, max_torque).double()
 		critic = Value(states_dim, actions_dim).double()
 		actor_critic_DDPG(env, actor, noise, critic, None, batch_size, num_starting_states, max_actions, states_dim, salient_states_dim, discount, False, True, verbose, all_rewards, epsilon, epsilon_decay, None, file_location, file_id, num_action_repeats, P_hat=None, model_type='model_free', save_checkpoints=save_checkpoints_training)
 
@@ -881,7 +710,25 @@ def main(
 		# np.save('actorcritic_pendulum_rewards',np.asarray(all_rewards)) 
 		# pdb.set_trace()
 	else:
-		actor = DeterministicPolicy(states_dim, actions_dim, max_torque).double()
+		# P_hat = []
+		# for ens in range(ensemble_size):
+		# 	P_hat
+		P_hat = DirectEnvModel(states_dim,actions_dim, max_torque, model_size=model_size, hidden_size=hidden_size)
+		P_hat.double()
+		#P_hat.load_state_dict(torch.load('trained_model_paml_lindyn_horizon6_traj7.pth', map_location=device))
+		#P_hat.load_state_dict(torch.load('act_model_paml_checkpoint_train_True_lin_dyn_horizon5_traj6_using1states.pth', map_location=device))
+
+		# value_optimizer = optim.SGD(critic.parameters(), lr=1e-5, momentum=0.90, nesterov=True) 
+		# value_lr_schedule = torch.optim.lr_scheduler.MultiStepLR(value_optimizer, milestones=[1500,3000], gamma=0.1)
+
+		#1e-4
+		if model_type == 'paml':
+			model_opt = optim.SGD(P_hat.parameters(), lr=initial_model_lr)#, momentum=0.90, nesterov=True)
+		elif model_type == 'mle':
+			model_opt = optim.SGD(P_hat.parameters(), lr=initial_model_lr)
+			# model_opt = optim.Adam(P_hat.parameters(), lr=initial_model_lr, weight_decay=1e-2)
+		# actor = DeterministicPolicy(states_dim, actions_dim, max_torque).double()
+		actor = DeterministicPolicy(salient_states_dim, actions_dim, max_torque).double()
 		critic = Value(states_dim, actions_dim).double()
 		# kwargs = {
 		# 		'P_hat'              : P_hat, 
@@ -907,7 +754,7 @@ def main(
 		#pretrain value function
 		ell = 0
 		# lr = 1e-5
-		plan_and_train_ddpg(P_hat, actor, critic, model_opt, num_starting_states, num_episodes, states_dim, salient_states_dim,actions_dim, discount, max_actions, env, initial_model_lr, num_iters, file_location, file_id, save_checkpoints_training, verbose, batch_size, virtual_episodes, model_type, num_action_repeats, epsilon, epsilon_decay, planning_horizon)
+		plan_and_train_ddpg(P_hat, actor, critic, model_opt, num_starting_states, num_episodes, states_dim, salient_states_dim,actions_dim, discount, max_actions, env, initial_model_lr, num_iters, file_location, file_id, save_checkpoints_training, verbose, batch_size, virtual_episodes, model_type, num_action_repeats, epsilon, epsilon_decay, planning_horizon, input_rho)
 		# if train_value_estimate:
 		# 	epochs_value = 300
 		# 	verbose = 100

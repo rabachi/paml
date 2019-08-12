@@ -23,7 +23,7 @@ def init_weights(m):
 	if isinstance(m, nn.Linear):
 		nn.init.normal_(m.weight, mean=0., std=0.1)
 		nn.init.constant_(m.bias, 0.1)
-		
+
 
 class AddExtraDims(gym.ObservationWrapper):
     """ Wrap action """
@@ -195,23 +195,49 @@ class DeterministicPolicy(nn.Module):
 		self.n_actions = out_dim
 		self.max_action = max_action
 
-		self.lin1 = nn.Linear(in_dim, 64)
-		# self.lin1 = nn.Linear(in_dim, out_dim)
-		self.relu = nn.ReLU()
+		if type(in_dim) == tuple:
+			self.p_type = 'cnn'
+			in_channels, w, h = in_dim
+			self.conv1 = nn.Conv2d(in_channels, 16, kernel_size=5, stride=1)
+			self.bn1 = nn.BatchNorm2d(16)
+			self.conv2 = nn.Conv2d(16, 32, kernel_size=5, stride=1)
+			self.bn2 = nn.BatchNorm2d(32)
+			# self.conv3 = nn.Conv2d(32, 32, kernel_size=5, stride=1)
+			# self.bn3 = nn.BatchNorm2d(32)
+			# Number of Linear input connections depends on output of conv2d layers
+			# and therefore the input image size, so compute it.
+			def conv2d_size_out(size, kernel_size = 5, stride = 1):
+				return (size - (kernel_size - 1) - 1) // stride  + 1
+			convw = conv2d_size_out(conv2d_size_out(w))
+			convh = conv2d_size_out(conv2d_size_out(h))
+			linear_input_size = convw * convh * 32
+		else:
+			self.p_type = 'nn'
+			self.lin1 = nn.Linear(in_dim, 64)
+			# self.lin1 = nn.Linear(in_dim, out_dim)
+			self.relu = nn.ReLU()
 
-		self.theta = nn.Linear(64, 64)
-		self.action_head = nn.Linear(64,out_dim)
+			self.theta = nn.Linear(64, 64)
+			self.action_head = nn.Linear(64,out_dim)
 
-		torch.nn.init.xavier_uniform_(self.lin1.weight)
-		torch.nn.init.xavier_uniform_(self.theta.weight)
-		torch.nn.init.xavier_uniform_(self.action_head.weight)
+			torch.nn.init.xavier_uniform_(self.lin1.weight)
+			torch.nn.init.xavier_uniform_(self.theta.weight)
+			torch.nn.init.xavier_uniform_(self.action_head.weight)
 
 	def forward(self, x):
-		x = self.relu(self.lin1(x))
-		x = self.relu(self.theta(x))
-		x = nn.Tanh()(self.action_head(x))
-		# x = nn.Tanh()(self.lin1(x))
-		return x
+		if self.p_type == 'cnn':
+			x = F.relu(self.bn1(self.conv1(x)))
+			x = F.relu(self.bn2(self.conv2(x)))
+			# x = F.relu(self.bn3(self.conv3(x)))
+			pdb.set_trace()
+			return self.head(x.view(x.size(0), -1))
+
+		else:
+			x = self.relu(self.lin1(x))
+			x = self.relu(self.theta(x))
+			x = nn.Tanh()(self.action_head(x))
+			# x = nn.Tanh()(self.lin1(x))
+			return x
 
 	def sample_action(self, x):
 		action = self.forward(x) * self.max_action
@@ -230,9 +256,13 @@ class Value(nn.Module):
 		torch.nn.init.xavier_uniform_(self.lin2.weight)
 		torch.nn.init.xavier_uniform_(self.theta.weight)
 
+	def reset_weights(self):
+		torch.nn.init.xavier_uniform_(self.lin1.weight)
+		torch.nn.init.xavier_uniform_(self.lin2.weight)
+		torch.nn.init.xavier_uniform_(self.theta.weight)
+
 	def forward(self, x, u):
 		xu = torch.cat([x, u], 1)
-
 		x = self.relu(self.lin1(xu))
 		values = self.theta(self.relu(self.lin2(x)))
 		return values
@@ -292,6 +322,21 @@ class Critic(nn.Module):
 		x1 = self.l3(x1)
 		return x1 
 
+class StableNoise(object):
+	def __init__(self, states_dim, salient_states_dim, param):
+		self.states_dim = states_dim
+		self.salient_states_dim = salient_states_dim
+		self.extra_dim = self.states_dim - self.salient_states_dim
+		self.param = param
+		self.random_initial = 2*(np.random.random(size = (self.extra_dim,)) - 0.5)
+
+	def get_obs(self, obs, t=0):
+		if self.extra_dim == 0:
+			return obs
+		extra_obs = self.random_initial * self.param**t
+		# split_idx = self.salient_states_dim + int(np.floor(self.extra_dim/3))
+		new_obs = np.hstack([obs, extra_obs])
+		return new_obs
 
 # Ornstein-Ulhenbeck Process
 # Taken from #https://github.com/vitchyr/rlkit/blob/master/rlkit/exploration_strategies/ou_strategy.py

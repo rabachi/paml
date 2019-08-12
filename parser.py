@@ -26,6 +26,7 @@ if __name__ == "__main__":
 	parser.add_argument('--algo', type=str, help='ac or reinforce')
 	parser.add_argument('--env', type=str, help='lin_dyn or Pendulum-v0')
 	parser.add_argument('--model_type', type=str, default='paml', help='paml, mle, model_free, random')
+	parser.add_argument('--ensemble', type=int, default=1, help='number of models in ensemble')
 	parser.add_argument('--batch_size', type=int, default=64, help='batch_size for actor critic')
 	parser.add_argument('--states_dim', type=int, default=5, help='total states dimensions')
 	parser.add_argument('--salient_states_dim', type=int, default=2, help='The number of non-random state dimensions, make sure if running ac that the dynamics are set correctly')
@@ -40,8 +41,9 @@ if __name__ == "__main__":
 	parser.add_argument('--num_eps_per_start', type=int, default=1)
 	parser.add_argument('--virtual_episodes', type=int, default=1000, help='number of virtual episodes to gather from model for planning')
 	parser.add_argument('--max_actions', type=int, default=20, help='-1 length of trajectory')
-	parser.add_argument('--num_action_repeats', type=int, default=2, help='number of times to repeat an action')
+	parser.add_argument('--num_action_repeats', type=int, default=1, help='number of times to repeat an action')
 	parser.add_argument('--planning_horizon', type=int, default=1, help='planning horizon for actor-critic fomulation')
+	parser.add_argument('--rhoER', type=float, default=0.5, help='fraction of data to use from experience replay in planning')
 	parser.add_argument('--discount', default=0.99)
 	#continuous action-space, default=True
 	parser.add_argument('--file_id', type=str, default='0', help='for saving multiple runs separately')
@@ -73,7 +75,9 @@ if __name__ == "__main__":
 							args.num_action_repeats,
 							args.rs,
 							args.planning_horizon,
-							args.hidden_size
+							args.hidden_size,
+							args.rhoER,
+							args.ensemble
 						)
 	elif args.algo == 'reinforce':
 		get_data.main(

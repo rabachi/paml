@@ -50,20 +50,22 @@ def discount_rewards(list_of_rewards, discount, center=True, batch_wise=False):
 			return r
 
 #very stupidly written function, too lazy for now to make better 
-def generate_data(env, dataset, actor, train_starting_states, val_starting_states, max_actions,noise, epsilon, epsilon_decay, num_action_repeats, discount=0.995, all_rewards=[], use_pixels=False):
+def generate_data(env, states_dim, dataset, actor, train_starting_states, val_starting_states, max_actions,noise, epsilon, epsilon_decay, num_action_repeats, discount=0.995, all_rewards=[], use_pixels=False):
 	# dataset = ReplayMemory(1000000)
 	noise_decay = 1.0 - epsilon_decay #0.99999
+	salient_states_dim = env.observation_space.shape[0]
+	stablenoise = StableNoise(states_dim, salient_states_dim, 0.98)
+
 	for ep in range(train_starting_states):
 		state = env.reset()
+		if env.spec.id != 'lin-dyn-v0':
+			state = stablenoise.get_obs(state, 0)
 
 		if use_pixels:
 			obs = env.render(mode='pixels')
 			observations = [preprocess(obs)]
 
 		noise.reset()
-		# epsilon *= noise_decay**ep
-		# epsilon -= epsilon_decay
-		# epsilon = epsilon_original
 		states = [state]
 		actions = []
 		rewards = []
@@ -71,15 +73,16 @@ def generate_data(env, dataset, actor, train_starting_states, val_starting_state
 		for timestep in range(max_actions):
 			if get_new_action:
 				with torch.no_grad():
-					# epsilon -= epsilon_decay
-					action = actor.sample_action(torch.DoubleTensor(state)).detach().numpy()
+					action = actor.sample_action(torch.DoubleTensor(state[:salient_states_dim])).detach().numpy()
 					# action += noise()*max(0, epsilon) #try without noise
 					# action = np.clip(action, -1., 1.)
-					action = noise.get_action(action, timestep)
+					action = noise.get_action(action, timestep+1)
 					get_new_action = False
 					action_counter = 1
 
 			state_prime, reward, done, _ = env.step(action)
+			if env.spec.id != 'lin-dyn-v0':
+				state_prime = stablenoise.get_obs(state_prime, timestep)
 
 			if use_pixels:
 				obs_prime = env.render(mode='pixels')
@@ -111,7 +114,7 @@ def generate_data(env, dataset, actor, train_starting_states, val_starting_state
 
 			for timestep in range(max_actions):
 				with torch.no_grad():
-					action = actor.sample_action(torch.DoubleTensor(state)).detach().numpy()
+					action = actor.sample_action(torch.DoubleTensor(state[:salient_states_dim])).detach().numpy()
 					#action += noise()*max(0, epsilon) #try without noise
 					#action = np.clip(action, -1., 1.)
 				state_prime, reward, done, _ = env.step(action)
@@ -382,6 +385,28 @@ def mle_multistep_loss(P_hat, policy, val_states_next_tensor, state_actions_val,
 
 	return err1_step
 
+
+def compute_normalization(data):
+    """
+    Write a function to take in a dataset and compute the means, and stds.
+    Return 6 elements: mean of s_t, std of s_t, mean of (s_t+1 - s_t), std of (s_t+1 - s_t), mean of actions, std of actions
+    """
+
+    # flatten dataset across all paths
+    observations = np.stack([item.state for item in data.memory])
+    next_observations = np.stack([item.next_state for item in data.memory])
+    actions = np.stack([item.action for item in data.memory])
+    
+    mean_obs = torch.tensor(np.mean(observations, axis=0)).unsqueeze(0)
+    std_obs = torch.tensor(np.std(observations, axis=0)).unsqueeze(0)
+    
+    mean_deltas =  torch.tensor(np.mean(next_observations - observations, axis=0)).unsqueeze(0)
+    std_deltas = torch.tensor(np.std(next_observations - observations, axis=0)).unsqueeze(0)
+    
+    mean_actions = torch.tensor(np.mean(actions, axis=0)).unsqueeze(0)
+    std_actions = torch.tensor(np.std(actions, axis=0)).unsqueeze(0)
+
+    return mean_obs, std_obs, mean_deltas, std_deltas, mean_actions, std_actions
 
 
 # def paml_validation_loss(env, P_hat, policy, val_states_prev_tensor, val_states_next_tensor, actions_tensor_val, rewards_tensor_val, R_range, val_size, n_actions, max_actions, continuous_actionspace=False, device='cpu'):

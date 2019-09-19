@@ -108,7 +108,7 @@ def paml_train(P_hat,
 		#calculate model gradients
 		#Do i need this line? seems to make a big difference .... 
 		# pdb.set_trace()
-		model_x_curr, model_x_next, model_a_list, model_r_list, model_a_prime_list = P_hat.unroll(step_state[:,:unroll_num,:], pe, states_dim, A_numpy, steps_to_unroll=R_range, continuous_actionspace=True, use_model=use_model, policy_states_dim=policy_states_dim, salient_states_dim=salient_states_dim, extra_dims_stable=extra_dims_stable)
+		model_x_curr, model_x_next, model_a_list, model_r_list, model_a_prime_list = P_hat.unroll(step_state[:,:unroll_num,:], pe, states_dim, A_numpy, steps_to_unroll=R_range, continuous_actionspace=True, use_model=use_model, policy_states_dim=policy_states_dim, extra_dims_stable=extra_dims_stable)
 
 		model_returns = discount_rewards(model_r_list[:,ell, 1:], discount, center=False, batch_wise=True)
 		model_log_probs = get_selected_log_probabilities(pe, model_x_next, model_a_prime_list).squeeze()
@@ -221,7 +221,7 @@ def reinforce(policy_estimator,
 			
 			step_state[:,:unroll_num,states_dim:] = policy_estimator.sample_action(step_state[:,:unroll_num,:states_dim])
 
-			model_x_curr, model_x_next, model_a_list, model_r_list, model_a_prime_list = P_hat.unroll(step_state[:,:unroll_num,:], policy_estimator, states_dim, A_numpy, steps_to_unroll=R_range, continuous_actionspace=True, use_model=use_model, policy_states_dim=policy_states_dim, salient_states_dim=salient_states_dim, extra_dims_stable=extra_dims_stable)
+			model_x_curr, model_x_next, model_a_list, model_r_list, model_a_prime_list = P_hat.unroll(step_state[:,:unroll_num,:], policy_estimator, states_dim, A_numpy, steps_to_unroll=R_range, continuous_actionspace=True, use_model=use_model, policy_states_dim=policy_states_dim, extra_dims_stable=extra_dims_stable)
 
 			all_rewards.extend(model_r_list[:,ell,:-1].contiguous().view(-1,max_actions).sum(dim=1).tolist())
 
@@ -314,7 +314,7 @@ def plan_and_train(P_hat, policy_estimator, model_opt, policy_optimizer, num_sta
 
 				train_step_state[:,:unroll_num,states_dim:] = policy_estimator.sample_action(train_step_state[:,:unroll_num,:states_dim])#I think all this does is make the visualizations look better, shouldn't affect performance (or visualizations ... )
 				#throw out old data
-				train_true_x_curr, train_true_x_next, train_true_a_list, train_true_r_list, train_true_a_prime_list = P_hat.unroll(train_step_state[:,:unroll_num,:], policy_estimator, states_dim, A_numpy, steps_to_unroll=R_range, continuous_actionspace=True, use_model=False, policy_states_dim=policy_states_dim, salient_states_dim=salient_states_dim, extra_dims_stable=extra_dims_stable)
+				train_true_x_curr, train_true_x_next, train_true_a_list, train_true_r_list, train_true_a_prime_list = P_hat.unroll(train_step_state[:,:unroll_num,:], policy_estimator, states_dim, A_numpy, steps_to_unroll=R_range, continuous_actionspace=True, use_model=False, policy_states_dim=policy_states_dim, extra_dims_stable=extra_dims_stable)
 				train_true_returns = discount_rewards(train_true_r_list[:,0,1:], discount=discount, batch_wise=True, center=False)
 			
 				print("Checking policy performance on true dynamics ...", train_true_r_list.squeeze().sum(dim=1).mean())
@@ -539,7 +539,7 @@ def main(
 
 	# max_actions = 10
 	# states_dim = 20
-	actions_dim = states_dim
+	actions_dim = salient_states_dim#states_dim
 	# salient_states_dim = 2
 	R_range = max_actions
 	

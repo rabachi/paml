@@ -56,6 +56,7 @@ class NormalizedEnv(gym.ActionWrapper):
         return act_k_inv * (action - act_b)
 
 
+# Transition = namedtuple('Transition',('full_state','state', 'next_state', 'action', 'reward'))
 Transition = namedtuple('Transition',('state', 'next_state', 'action', 'reward'))
 
 # Using PyTorch's Tutorial
@@ -213,12 +214,12 @@ class DeterministicPolicy(nn.Module):
 			linear_input_size = convw * convh * 32
 		else:
 			self.p_type = 'nn'
-			self.lin1 = nn.Linear(in_dim, 64)
+			self.lin1 = nn.Linear(in_dim, 30)
 			# self.lin1 = nn.Linear(in_dim, out_dim)
 			self.relu = nn.ReLU()
 
-			self.theta = nn.Linear(64, 64)
-			self.action_head = nn.Linear(64,out_dim)
+			self.theta = nn.Linear(30, 30)
+			self.action_head = nn.Linear(30,out_dim)
 
 			torch.nn.init.xavier_uniform_(self.lin1.weight)
 			torch.nn.init.xavier_uniform_(self.theta.weight)
@@ -323,12 +324,12 @@ class Critic(nn.Module):
 		return x1 
 
 class StableNoise(object):
-	def __init__(self, states_dim, salient_states_dim, param):
+	def __init__(self, states_dim, salient_states_dim, param, init=1):
 		self.states_dim = states_dim
 		self.salient_states_dim = salient_states_dim
 		self.extra_dim = self.states_dim - self.salient_states_dim
 		self.param = param
-		self.random_initial = 2*(np.random.random(size = (self.extra_dim,)) - 0.5)
+		self.random_initial = 2*init*np.random.random(size = (self.extra_dim,)) - init #I THINK THIS NOISE SHOULD BE MORE AGGRESSIVE
 
 	def get_obs(self, obs, t=0):
 		if self.extra_dim == 0:
@@ -342,6 +343,7 @@ class StableNoise(object):
 # Taken from #https://github.com/vitchyr/rlkit/blob/master/rlkit/exploration_strategies/ou_strategy.py
 class OUNoise(object):
     def __init__(self, action_space, mu=0.0, theta=0.15, max_sigma=0.3, min_sigma=0.3, decay_period=100000):
+    # def __init__(self, action_space, mu=0.0, theta=0.05, max_sigma=0.25, min_sigma=0.25, decay_period=100000):
         self.mu           = mu
         self.theta        = theta
         self.sigma        = max_sigma

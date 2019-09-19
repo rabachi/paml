@@ -21,6 +21,9 @@ from models import *
 #device = 'cuda' if torch.cuda.is_available() else 'cpu'
 device = 'cpu'
 
+def count_parameters(model):
+	return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
 def discount_rewards(list_of_rewards, discount, center=True, batch_wise=False):
 	if isinstance(list_of_rewards, list) or isinstance(list_of_rewards, np.ndarray):
 		list_of_rewards = np.asarray(list_of_rewards, dtype=np.float32)
@@ -50,22 +53,31 @@ def discount_rewards(list_of_rewards, discount, center=True, batch_wise=False):
 			return r
 
 #very stupidly written function, too lazy for now to make better 
-def generate_data(env, states_dim, dataset, actor, train_starting_states, val_starting_states, max_actions,noise, epsilon, epsilon_decay, num_action_repeats, discount=0.995, all_rewards=[], use_pixels=False):
+def generate_data(env, states_dim, dataset, val_dataset, actor, train_starting_states, val_starting_states, max_actions,noise, epsilon, epsilon_decay, num_action_repeats, discount=0.995, all_rewards=[], use_pixels=False, reset=True, start_state=None, start_noise=None):
 	# dataset = ReplayMemory(1000000)
 	noise_decay = 1.0 - epsilon_decay #0.99999
 	salient_states_dim = env.observation_space.shape[0]
 	stablenoise = StableNoise(states_dim, salient_states_dim, 0.98)
 
 	for ep in range(train_starting_states):
-		state = env.reset()
-		if env.spec.id != 'lin-dyn-v0':
+		if reset or start_state is None:
+			state = env.reset()
+		else:
+			state = start_state #have to find a way to set env to this state ... otherwise this is doing nothing
+		# full_state = env.env.state_vector().copy()
+
+		if env.spec.id != 'lin-dyn-v0' and reset:
 			state = stablenoise.get_obs(state, 0)
 
 		if use_pixels:
 			obs = env.render(mode='pixels')
 			observations = [preprocess(obs)]
 
-		noise.reset()
+		if reset or start_noise is None:
+			noise.reset()
+		else:
+			noise = start_noise
+
 		states = [state]
 		actions = []
 		rewards = []
@@ -73,73 +85,79 @@ def generate_data(env, states_dim, dataset, actor, train_starting_states, val_st
 		for timestep in range(max_actions):
 			if get_new_action:
 				with torch.no_grad():
-					action = actor.sample_action(torch.DoubleTensor(state[:salient_states_dim])).detach().numpy()
+					action = actor.sample_action(torch.DoubleTensor(state)).detach().numpy()#[:salient_states_dim])).detach().numpy()
+
 					# action += noise()*max(0, epsilon) #try without noise
 					# action = np.clip(action, -1., 1.)
-					action = noise.get_action(action, timestep+1)
+					action = noise.get_action(action, timestep, multiplier=1.0)
 					get_new_action = False
 					action_counter = 1
 
 			state_prime, reward, done, _ = env.step(action)
+			#UNCOMMENT THESE FOR EXTRA DIMS AND REMOVE THE FULL_STATE NONSENSE!
 			if env.spec.id != 'lin-dyn-v0':
 				state_prime = stablenoise.get_obs(state_prime, timestep)
-
 			if use_pixels:
 				obs_prime = env.render(mode='pixels')
 				observations.append(preprocess(obs_prime))
+				
+			if reward is not None: #WHY IS REWARD NONE sometimes?!
+				actions.append(action)
+				states.append(state_prime)
+				rewards.append(reward)
 
-			actions.append(action)
-			states.append(state_prime)
-			rewards.append(reward)
-
-			dataset.push(state, state_prime, action, reward)
+				# dataset.push(full_state, state, state_prime, action, reward)
+				dataset.push(state, state_prime, action, reward)
 			state = state_prime
+			# full_state = env.env.state_vector().copy()
+
 			get_new_action = True if action_counter == num_action_repeats else False
 			action_counter += 1
 		#returns = discount_rewards(rewards, discount, center=True, batch_wise=False)
 
 		# for x, x_next, u, r, ret in zip(states[:-1], states[1:], actions, rewards, returns):
 		# 	dataset.push(x, x_next, u, r, ret)
-		all_rewards.append(sum(rewards))
+		# all_rewards.append(sum(rewards))
 	# print('Average rewards on true dynamics: {:.3f}'.format(sum(all_rewards)/len(all_rewards)))
 
-	val_dataset = None
+	# val_dataset = None
 	if val_starting_states is not None:
-		val_dataset = ReplayMemory(100000)
+		# val_dataset = ReplayMemory(100000)
 		for ep in range(val_starting_states):
 			state = env.reset()
+			# full_state = env.env.state_vector().copy()
+			if env.spec.id != 'lin-dyn-v0':
+				state = stablenoise.get_obs(state, 0)
 			states = [state]
 			actions = []
 			rewards = []
 
 			for timestep in range(max_actions):
 				with torch.no_grad():
-					action = actor.sample_action(torch.DoubleTensor(state[:salient_states_dim])).detach().numpy()
-					#action += noise()*max(0, epsilon) #try without noise
-					#action = np.clip(action, -1., 1.)
+					action = actor.sample_action(torch.DoubleTensor(state)).detach().numpy()#[:salient_states_dim])).detach().numpy()
+					action = noise.get_action(action, timestep+1, multiplier=1.0)
+					
 				state_prime, reward, done, _ = env.step(action)
-
+				if env.spec.id != 'lin-dyn-v0':
+					state_prime = stablenoise.get_obs(state_prime, timestep)
 				actions.append(action)
 				states.append(state_prime)
 				rewards.append(reward)
-
+				# val_dataset.push(full_state, state, state_prime, action, reward)
 				val_dataset.push(state, state_prime, action, reward)
-
 				state = state_prime
+				# full_state = env.env.state_vector().copy()
 
-	return dataset, val_dataset, epsilon
+	return state, noise, epsilon
 
 
 def lin_dyn(A, steps, policy, all_rewards, x=None, extra_dim=0, discount=0.9):
-
 	#B = np.eye(2)
 	#print linalg.eig(A)[0], np.abs(linalg.eig(A)[0])
 
 	#This should be changed if it's actually used anywhere, to enable use with multiple x dimensions
 	# if x is None:        
 	# 	x = np.array([1.,0.])
-
-
 	x = add_irrelevant_features(x, extra_dim=extra_dim, noise_level=0.4)
 		
 	EYE = np.eye(x.shape[0])

@@ -22,7 +22,7 @@ import dm_control2gym
 if __name__=="__main__":
 	file_location = '/scratch/gobi1/abachiro/paml_results'
 	# env_name = 'dm-Walker-v0'
-	env_name = 'dm-Cartpole-balance-v0'
+	env_name = 'Pendulum-v0'#'dm-Cartpole-balance-v0'
 
 	num_action_repeats = 1
 	real_episodes = 100
@@ -59,7 +59,7 @@ if __name__=="__main__":
 		raise NotImplementedError
 
 	iter_count = 80000
-	for rs in range(5):
+	for rs in range(1,4):
 		torch.manual_seed(rs)
 		np.random.seed(rs)	
 		env.seed(rs)
@@ -75,7 +75,7 @@ if __name__=="__main__":
 
 		max_torque = float(env.action_space.high[0])
 		actions_dim = env.action_space.shape[0]
-		states_dim = env.observation_space.shape[0]
+		states_dim = 30#env.observation_space.shape[0]
 		salient_states_dim = env.observation_space.shape[0]
 
 		continuous_actionspace = True
@@ -87,24 +87,27 @@ if __name__=="__main__":
 		all_rewards = []
 
 		noise = OUNoise(env.action_space)
-		actor = DeterministicPolicy(salient_states_dim, actions_dim, max_torque).double()
+		actor = DeterministicPolicy(states_dim, actions_dim, max_torque).double()
 		critic = Value(states_dim, actions_dim).double()
-
+		actor.load_state_dict(torch.load(os.path.join(file_location, 'act_policy_paml_state30_salient3_checkpoint_Pendulum-v0_horizon3_traj201_constrainedModel_4.pth'), map_location=device))
 		# actor.load_state_dict(torch.load(os.path.join(file_location, 'act_40000_policy_model_free_state24_salient24_checkpoint_dm-Walker-v0_horizon1_traj1001_nnModel_1.pth'), map_location=device))
 		# critic.load_state_dict(torch.load(os.path.join(file_location, 'critic_160000_policy_model_free_state24_salient24_checkpoint_dm-Walker-v0_horizon1_traj1001_nnModel_1.pth'), map_location=device))
 		# critic.load_state_dict(torch.load(os.path.join(file_location, 'critic_policy_paml_state5_salient5_checkpoint_dm-Cartpole-balance-v0_traj201_0.pth'), map_location=device))
-		critic.load_state_dict(torch.load(os.path.join(file_location, 'critic_80000_policy_model_free_state5_salient5_checkpoint_dm-Cartpole-balance-v0_horizon1_traj201_nnModel_1.pth'), map_location=device))
-
+		critic.load_state_dict(torch.load(os.path.join(file_location, 'critic_policy_mle_state30_salient3_checkpoint_Pendulum-v0_traj201_constrainedModel_4.pth'), map_location=device))
+		
+		stablenoise = StableNoise(states_dim, salient_states_dim, 0.98)
 		P_hat = DirectEnvModel(states_dim, actions_dim, max_torque, model_size='nn', hidden_size=1).double()
 
 		dataset = ReplayMemory(1000000)
 		batch_true_pe_grads = np.zeros((num_starting_states,count_parameters(actor)))
 		estimate_return = torch.zeros((num_starting_states, max_actions)).double()
-		returns = torch.zeros((num_starting_states, max_actions)).double()
+		returns = torch.zeros((num_starting_states, 1)).double()
 		states_all = torch.zeros((num_starting_states, max_actions, states_dim)).double()
+
 		for ep in range(num_starting_states):
 			# noise.reset()
 			state = env.reset()
+			state = stablenoise.get_obs(state, 0)
 			states = [state]
 			actions = []
 			rewards = []
@@ -112,10 +115,12 @@ if __name__=="__main__":
 			
 			for timestep in range(max_actions):
 				with torch.no_grad():
-					action = actor.sample_action(torch.DoubleTensor(state[:salient_states_dim])).detach().numpy()
+					# action = actor.sample_action(torch.DoubleTensor(state[:salient_states_dim])).detach().numpy()
+					action = actor.sample_action(torch.DoubleTensor(state)).detach().numpy()
 					# action = noise.get_action(action, timestep+1, multiplier=1.0)
 
 				state_prime, reward, done, _ = env.step(action)
+				state_prime = stablenoise.get_obs(state_prime, timestep+1)
 				actions.append(action)
 				states.append(state_prime)
 				rewards.append(reward)
@@ -125,7 +130,7 @@ if __name__=="__main__":
 				dataset.push(state, state_prime, action, reward)
 				state = state_prime
 
-			returns[ep] = discount_rewards(rewards, discount, center=False, batch_wise=False).detach()
+			returns[ep] = discount_rewards(rewards, discount, center=False, batch_wise=False).detach()[0]
 			states_all[ep] = torch.tensor(states[1:]).double()
 			# pdb.set_trace()
 			# (actor.sample_action(torch.tensor(states[1:]).double()) * returns.unsqueeze(1)).sum(dim=0)
@@ -147,8 +152,8 @@ if __name__=="__main__":
 		# for g in range(len(true_pe_grads_attached)):
 		# 	true_pe_grads = torch.cat((true_pe_grads,true_pe_grads_attached[g].detach().view(-1)))
 		
-		# np.save(os.path.join(file_location, 'true_returns'+str(rs)+'_80k_'+env_name), np.asarray(returns))
-		# np.save(os.path.join(file_location, 'Q_estimated_returns'+str(rs)+'_80k_'+env_name), np.asarray(estimate_return))
+		np.save(os.path.join(file_location, 'true_returns'+str(rs)+'_80k_'+env_name), np.asarray(returns))
+		np.save(os.path.join(file_location, 'Q_estimated_returns'+str(rs)+'_80k_'+env_name), np.asarray(estimate_return))
 		# pdb.set_trace()
 		# print(abs(estimate_return - returns.mean(dim=0)).mean(dim=0).norm())
 			# print(abs(estimate_return.double() - returns).mean())

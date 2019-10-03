@@ -81,7 +81,7 @@ def paml_train(P_hat,
 	end_of_trajectory = 1
 	ell = 0
 	num_iters = num_iters if train else 1
-	model_opt = optim.SGD(P_hat.parameters(), lr=1e-3)#, momentum=0.90, nesterov=True)
+	model_opt = optim.Adam(P_hat.parameters(), lr=1e-7)#, momentum=0.90, nesterov=True)
 	#calculate true gradients
 	pe.zero_grad()
 	true_log_probs = get_selected_log_probabilities(pe, true_x_next, true_a_prime_list).squeeze()
@@ -107,7 +107,6 @@ def paml_train(P_hat,
 		pe.zero_grad()
 		#calculate model gradients
 		#Do i need this line? seems to make a big difference .... 
-		# pdb.set_trace()
 		model_x_curr, model_x_next, model_a_list, model_r_list, model_a_prime_list = P_hat.unroll(step_state[:,:unroll_num,:], pe, states_dim, A_numpy, steps_to_unroll=R_range, continuous_actionspace=True, use_model=use_model, policy_states_dim=policy_states_dim, extra_dims_stable=extra_dims_stable)
 
 		model_returns = discount_rewards(model_r_list[:,ell, 1:], discount, center=False, batch_wise=True)
@@ -316,7 +315,7 @@ def plan_and_train(P_hat, policy_estimator, model_opt, policy_optimizer, num_sta
 				#throw out old data
 				train_true_x_curr, train_true_x_next, train_true_a_list, train_true_r_list, train_true_a_prime_list = P_hat.unroll(train_step_state[:,:unroll_num,:], policy_estimator, states_dim, A_numpy, steps_to_unroll=R_range, continuous_actionspace=True, use_model=False, policy_states_dim=policy_states_dim, extra_dims_stable=extra_dims_stable)
 				train_true_returns = discount_rewards(train_true_r_list[:,0,1:], discount=discount, batch_wise=True, center=False)
-			
+				
 				print("Checking policy performance on true dynamics ...", train_true_r_list.squeeze().sum(dim=1).mean())
 				true_rewards.append(train_true_r_list.squeeze().sum(dim=1).mean())
 
@@ -342,7 +341,6 @@ def plan_and_train(P_hat, policy_estimator, model_opt, policy_optimizer, num_sta
 		paml_train(**kwargs)
 		# state_actions = torch.cat((train_true_x_curr.squeeze(), train_true_a_list.squeeze()), dim=2)
 		# P_hat.train_mle(policy_estimator, state_actions, train_true_x_next.squeeze(), 1, max_actions, R_range, model_opt, "lin_dyn", continuous_actionspace, losses)
-
 		#check paml loss on model, before training model
 		kwargs['train'] = True
 		kwargs['num_episodes'] = num_episodes
@@ -368,6 +366,7 @@ def plan_and_train(P_hat, policy_estimator, model_opt, policy_optimizer, num_sta
 			# num_iters = int(np.ceil(num_iters * epsilon))	
 			# kwargs['num_iters'] = num_iters
 			if not skip_next_training:
+				pdb.set_trace()
 				P_hat = paml_train(**kwargs)
 			else:
 				skip_next_training = False
@@ -539,7 +538,7 @@ def main(
 
 	# max_actions = 10
 	# states_dim = 20
-	actions_dim = salient_states_dim#states_dim
+	actions_dim = states_dim
 	# salient_states_dim = 2
 	R_range = max_actions
 	

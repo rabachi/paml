@@ -334,7 +334,7 @@ class StableNoise(object):
 	def get_obs(self, obs, t=0):
 		if self.extra_dim == 0:
 			return obs
-		extra_obs = self.random_initial * self.param**t
+		extra_obs = self.random_initial * self.param**t * np.random.random_sample()
 		# split_idx = self.salient_states_dim + int(np.floor(self.extra_dim/3))
 		new_obs = np.hstack([obs, extra_obs])
 		return new_obs

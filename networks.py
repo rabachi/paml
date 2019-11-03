@@ -2,6 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 # import gym
 import sys
+import os
 
 import torch
 import math
@@ -15,6 +16,7 @@ from utils import *
 from collections import namedtuple
 import random
 import gym
+from copy import copy, deepcopy
 
 
 device='cpu'
@@ -65,16 +67,24 @@ class ReplayMemory(object):
 	def __init__(self, size):
 		self.size = size
 		self.memory = []
+		self.temp_memory = []
 		self.position = 0
 
 	def push(self, *args):
 		"""Saves a transition."""
-		
 		if len(self.memory) < self.size:
 			self.memory.append(None)
 
 		self.memory[self.position] = Transition(*args)
 		self.position = (self.position + 1) % self.size
+
+	def temp_push(self, *args):
+		'''saves a transition temporarily'''
+		self.temp_memory.append(Transition(*args))
+
+	def clear_temp(self):
+		'''clears temporarily saved transitions'''
+		self.temp_memory = []
 
 	def clear(self):
 		self.memory = []
@@ -118,7 +128,11 @@ class ReplayMemory(object):
 			return batch
 
 		else:
-			return random.sample(self.memory, batch_size)
+			# return random.sample(self.memory + self.temp_memory, batch_size)
+			if len(self.temp_memory) >= batch_size:
+				return random.sample(self.temp_memory, batch_size)
+			else:
+				return random.sample(self.memory + self.temp_memory, batch_size)
 
 	def __len__(self):
 		return len(self.memory)
@@ -246,7 +260,7 @@ class DeterministicPolicy(nn.Module):
 
 
 class Value(nn.Module):
-	def __init__(self, states_dim, actions_dim):
+	def __init__(self, states_dim, actions_dim, pretrain_val_lr=1e-4, pretrain_value_lr_schedule=None):
 		super(Value, self).__init__()
 		self.lin1 = nn.Linear(states_dim+actions_dim, 64)
 		self.lin2 = nn.Linear(64, 64)
@@ -256,6 +270,11 @@ class Value(nn.Module):
 		torch.nn.init.xavier_uniform_(self.lin1.weight)
 		torch.nn.init.xavier_uniform_(self.lin2.weight)
 		torch.nn.init.xavier_uniform_(self.theta.weight)
+
+		self.q_optimizer = optim.Adam(self.parameters(), lr=pretrain_val_lr)
+		self.pretrain_value_lr_schedule = None
+		self.states_dim = states_dim
+		self.actions_dim = actions_dim
 
 	def reset_weights(self):
 		torch.nn.init.xavier_uniform_(self.lin1.weight)
@@ -267,6 +286,52 @@ class Value(nn.Module):
 		x = self.relu(self.lin1(xu))
 		values = self.theta(self.relu(self.lin2(x)))
 		return values
+
+	def pre_train(self, actor, dataset, epochs_value, discount, batch_size, salient_states_dim, file_location, file_id, model_type, env_name, max_actions, verbose=100):
+		MSE = nn.MSELoss()
+		TAU=0.001
+		target_critic = Value(self.states_dim, self.actions_dim).double()
+
+		for target_param, param in zip(target_critic.parameters(), self.parameters()):
+			target_param.data.copy_(param.data)
+
+		train_losses = []
+		for i in range(epochs_value):
+			batch = dataset.sample(batch_size)
+			states_prev = torch.tensor([samp.state for samp in batch]).double().to(device)
+			states_next = torch.tensor([samp.next_state for samp in batch]).double().to(device)
+			rewards_tensor = torch.tensor([samp.reward for samp in batch]).double().to(device).unsqueeze(1)
+			actions_tensor = torch.tensor([samp.action for samp in batch]).double().to(device)
+
+			# actions_next = actor.sample_action(states_next[:,:salient_states_dim])
+			actions_next = actor.sample_action(states_next)#[:,:salient_states_dim])
+			# target_q = target_critic(states_next[:,:salient_states_dim], actions_next)
+			target_q = target_critic(states_next, actions_next)
+			y = rewards_tensor + discount * target_q.detach() #detach to avoid backprop target
+			# q = critic(states_prev[:,:salient_states_dim], actions_tensor)
+			q = self(states_prev, actions_tensor)
+
+			self.q_optimizer.zero_grad()
+			loss = MSE(y, q)
+			train_losses.append(loss.detach().data)
+
+			if i % verbose == 0:
+				print('Epoch: {:4d} | LR: {:.4f} | Value estimator loss: {:.5f}'.format(i, self.q_optimizer.param_groups[0]['lr'], loss.detach().cpu()))
+				torch.save(self.state_dict(), os.path.join(file_location,'critic_policy_{}_state{}_salient{}_checkpoint_{}_traj{}_{}.pth'.format(model_type, self.states_dim, salient_states_dim, env_name, max_actions + 1, file_id)))
+
+			loss.backward()
+			nn.utils.clip_grad_value_(self.parameters(), 100.0)
+			self.q_optimizer.step()
+			if self.pretrain_value_lr_schedule is not None:
+				self.pretrain_value_lr_schedule.step()
+
+			#soft update the target critic
+			for target_param, param in zip(target_critic.parameters(), self.parameters()):
+				target_param.data.copy_(target_param.data * (1.0 - TAU) + param.data * TAU)
+			
+			# if non_decreasing(train_losses):
+			# 	self.q_optimizer = optim.Adam(self.parameters(), lr=self.q_optimizer.param_groups[0]['lr']/2)
+		del target_critic
 
 
 class Actor(nn.Module):
@@ -322,22 +387,6 @@ class Critic(nn.Module):
 		x1 = F.relu(self.l2(x1))
 		x1 = self.l3(x1)
 		return x1 
-
-class StableNoise(object):
-	def __init__(self, states_dim, salient_states_dim, param, init=1):
-		self.states_dim = states_dim
-		self.salient_states_dim = salient_states_dim
-		self.extra_dim = self.states_dim - self.salient_states_dim
-		self.param = param
-		self.random_initial = 2*init*np.random.random(size = (self.extra_dim,)) - init #I THINK THIS NOISE SHOULD BE MORE AGGRESSIVE
-
-	def get_obs(self, obs, t=0):
-		if self.extra_dim == 0:
-			return obs
-		extra_obs = self.random_initial * self.param**t * np.random.random_sample()
-		# split_idx = self.salient_states_dim + int(np.floor(self.extra_dim/3))
-		new_obs = np.hstack([obs, extra_obs])
-		return new_obs
 
 # Ornstein-Ulhenbeck Process
 # Taken from #https://github.com/vitchyr/rlkit/blob/master/rlkit/exploration_strategies/ou_strategy.py

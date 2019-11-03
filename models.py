@@ -15,6 +15,7 @@ from utils import *
 from collections import namedtuple
 import random
 import os
+from networks import *
 # from get_data import *
 
 
@@ -41,7 +42,7 @@ class DirectEnvModel(torch.nn.Module):
 			torch.nn.init.xavier_uniform_(self.fc1.weight)
 			torch.nn.init.xavier_uniform_(self._enc_mu.weight)
 		elif self.model_size == 'nn':
-			self.fc1 = nn.Linear(states_dim + N_ACTIONS, 512)
+			self.fc1 = nn.Linear(states_dim + N_ACTIONS, 512) #512 good for halfcheetah
 			self.fc2 = nn.Linear(512, 512)
 			self._enc_mu = torch.nn.Linear(512, states_dim)
 			torch.nn.init.xavier_uniform_(self.fc1.weight)
@@ -70,8 +71,8 @@ class DirectEnvModel(torch.nn.Module):
 	def forward(self, x):
 		if self.model_size == 'small':
 			x = self.fc1(x)
-			mu = nn.Tanh()(x) * 2.0
-			# mu = x
+			# mu = nn.Tanh()(x) * 2.0
+			mu = x
 		elif self.model_size == 'constrained':
 			x = self._enc_mu(self.fc1(x))
 			mu = x#nn.Tanh()(x) * 360.0
@@ -400,7 +401,6 @@ class DirectEnvModel(torch.nn.Module):
 			if use_model:
 				# model_x_curr, model_x_next, model_a_list, model_r_list, _ = P_hat.unroll(step_state, actor, states_dim, None, steps_to_unroll=1, continuous_actionspace=True, use_model=True, policy_states_dim=salient_states_dim, noise=noise, epsilon=epsilon, epsilon_decay=None, env=env)
 				model_x_curr, model_x_next, model_a_list, _, _ = self.unroll(step_state, actor, states_dim, None, steps_to_unroll=1, continuous_actionspace=True, use_model=True, policy_states_dim=states_dim, noise=noise, epsilon=epsilon, epsilon_decay=None, env=env)#salient_states_dim, noise=noise, epsilon=epsilon, epsilon_decay=None, env=env)
-
 				#can remove these after unroll is fixed
 				model_x_curr = model_x_curr.squeeze(1).squeeze(1)
 				model_x_next = model_x_next.squeeze(1).squeeze(1)
@@ -452,8 +452,8 @@ class DirectEnvModel(torch.nn.Module):
 			# loss = (loss_grads / (2*(true_policy_loss - model_policy_loss))).sum(dim=1).mean()
 			
 
-			norms_true_pe_grads.append(true_pe_grads.norm().data.cpu())
-			norms_model_pe_grads.append(model_pe_grads.norm().data.cpu())
+			# norms_true_pe_grads.append(true_pe_grads.norm().data.cpu())
+			# norms_model_pe_grads.append(model_pe_grads.norm().data.cpu())
 			#mle_loss = torch.mean(torch.sum(((model_x_next - model_x_curr)-(true_states_next - true_states_prev))**2,dim=1))
 			paml_loss = torch.sqrt((true_pe_grads-model_pe_grads).pow(2).sum())
 			# print(cos(true_pe_grads, model_pe_grads).detach().data.cpu())
@@ -470,9 +470,9 @@ class DirectEnvModel(torch.nn.Module):
 
 			# np.save(os.path.join(file_location,'act_loss_paml_state{}_salient{}_checkpoint_train_{}_{}_horizon{}_traj{}_{}'.format(states_dim, salient_states_dim, train, env_name, R_range, max_actions + 1, file_id)), np.asarray(losses))
 
-			np.save(os.path.join(file_location,'model_pe_grad_norms_state{}_salient{}_checkpoint_train_{}_{}_horizon{}_traj{}_{}'.format(states_dim, salient_states_dim, train, env_name, R_range, max_actions + 1, file_id)), np.asarray(norms_model_pe_grads))
+			# np.save(os.path.join(file_location,'model_pe_grad_norms_state{}_salient{}_checkpoint_train_{}_{}_horizon{}_traj{}_{}'.format(states_dim, salient_states_dim, train, env_name, R_range, max_actions + 1, file_id)), np.asarray(norms_model_pe_grads))
 
-			np.save(os.path.join(file_location,'true_pe_grad_norms_state{}_salient{}_checkpoint_train_{}_{}_horizon{}_traj{}_{}'.format(states_dim, salient_states_dim, train, env_name, R_range, max_actions + 1, file_id)), np.asarray(norms_true_pe_grads))
+			# np.save(os.path.join(file_location,'true_pe_grad_norms_state{}_salient{}_checkpoint_train_{}_{}_horizon{}_traj{}_{}'.format(states_dim, salient_states_dim, train, env_name, R_range, max_actions + 1, file_id)), np.asarray(norms_true_pe_grads))
 			
 				# best_loss = loss.detach().cpu()
 
@@ -500,8 +500,7 @@ class DirectEnvModel(torch.nn.Module):
 
 				if (i % verbose == 0) or (i == num_iters - 1):
 					print("LR: {:.5f} | batch_num: {:5d} | COS grads: {:.5f} | critic ex val: {:.3f} | paml_loss: {:.5f}".format(opt.param_groups[0]['lr'], i, nn.CosineSimilarity(dim=0)(curr_grad, prev_grad), true_policy_loss.mean().data.cpu(), loss.data.cpu()))
-
-					cos_grads.append(nn.CosineSimilarity(dim=0)(curr_grad, prev_grad))
+					# cos_grads.append(nn.CosineSimilarity(dim=0)(curr_grad, prev_grad))
 				prev_grad = curr_grad
 				# lr_schedule.step()
 
@@ -513,14 +512,14 @@ class DirectEnvModel(torch.nn.Module):
 				print("Validation loss model: {} | R_range: {:3d} | batch_num: {:5d} | average validation paml_loss = {:.7f}".format(use_model, R_range, i, loss.data.cpu()))
 				print("-----------------------------------------------------------------------------------------------------")
 			
-			losses.append(loss.data.cpu())
-			
+			# losses.append(loss.data.cpu())
 
 		# if train and sum(cos_grads)/len(cos_grads) < 0.1:
 		lr_schedule.step()
 
 		# if train and saved:
 		# 	self.load_state_dict(torch.load(os.path.join(file_location,'act_model_paml_state{}_salient{}_checkpoint_train_{}_{}_horizon{}_traj{}_{}.pth'.format(states_dim, salient_states_dim, train, env_name, R_range, max_actions + 1, file_id)), map_location=device))
+		torch.save(self.state_dict(), os.path.join(file_location,'model_paml_checkpoint_state{}_salient{}_actorcritic_{}_horizon{}_traj{}_{}.pth'.format(states_dim, salient_states_dim, env_name, planning_horizon, max_actions+1, file_id)))
 
 		return loss.data.cpu()
 
@@ -677,9 +676,12 @@ class DirectEnvModel(torch.nn.Module):
 			model_loss.backward()
 			# nn.utils.clip_grad_value_(self.parameters(), 100.0)
 			opt.step()
-			losses.append(model_loss.data.cpu())
+			# losses.append(model_loss.data.cpu())
 		if lr_schedule is not None:
 			lr_schedule.step()
+
+		del val_squared_errors, val_model_losses
+
 		return model_loss
 
 	def predict(self, states, actions):

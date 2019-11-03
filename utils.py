@@ -15,14 +15,17 @@ from rewardfunctions import *
 import pdb
 
 from scipy import linalg
-from networks import *
-from models import *
+# from networks import *
+# from models import *
 
 #device = 'cuda' if torch.cuda.is_available() else 'cpu'
 device = 'cpu'
 
 def count_parameters(model):
 	return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+def non_decreasing(L):
+	return all(x>=y for x, y in zip(L, L[1:]))
 
 def discount_rewards(list_of_rewards, discount, center=True, batch_wise=False):
 	if isinstance(list_of_rewards, list) or isinstance(list_of_rewards, np.ndarray):
@@ -51,9 +54,25 @@ def discount_rewards(list_of_rewards, discount, center=True, batch_wise=False):
 			return (r - torch.mean(list_of_rewards))/(torch.std(list_of_rewards) + 1e-5)
 		else:
 			return r
+			
+class StableNoise(object):
+	def __init__(self, states_dim, salient_states_dim, param, init=1):
+		self.states_dim = states_dim
+		self.salient_states_dim = salient_states_dim
+		self.extra_dim = self.states_dim - self.salient_states_dim
+		self.param = param
+		self.random_initial = 2*init*np.random.random(size = (self.extra_dim,)) - init #I THINK THIS NOISE SHOULD BE MORE AGGRESSIVE
+
+	def get_obs(self, obs, t=0):
+		if self.extra_dim == 0:
+			return obs
+		extra_obs = self.random_initial * self.param**t * np.random.random_sample()
+		# split_idx = self.salient_states_dim + int(np.floor(self.extra_dim/3))
+		new_obs = np.hstack([obs, extra_obs])
+		return new_obs
 
 #very stupidly written function, too lazy for now to make better 
-def generate_data(env, states_dim, dataset, val_dataset, actor, train_starting_states, val_starting_states, max_actions,noise, epsilon, epsilon_decay, num_action_repeats, discount=0.995, all_rewards=[], use_pixels=False, reset=True, start_state=None, start_noise=None):
+def generate_data(env, states_dim, dataset, val_dataset, actor, train_starting_states, val_starting_states, max_actions,noise, epsilon, epsilon_decay, num_action_repeats, temp_data=False, discount=0.995, all_rewards=[], use_pixels=False, reset=True, start_state=None, start_noise=None):
 	# dataset = ReplayMemory(1000000)
 	noise_decay = 1.0 - epsilon_decay #0.99999
 	if env.spec.id != 'lin-dyn-v0':
@@ -111,7 +130,10 @@ def generate_data(env, states_dim, dataset, val_dataset, actor, train_starting_s
 				rewards.append(reward)
 
 				# dataset.push(full_state, state, state_prime, action, reward)
-				dataset.push(state, state_prime, action, reward)
+				if temp_data:
+					dataset.temp_push(state, state_prime, action, reward)
+				else:
+					dataset.push(state, state_prime, action, reward)
 			state = state_prime
 			# full_state = env.env.state_vector().copy()
 

@@ -1,6 +1,5 @@
 import numpy as np
 import matplotlib.pyplot as plt
-# import gym
 import sys
 import os
 
@@ -16,7 +15,6 @@ from utils import *
 from collections import namedtuple
 import random
 import gym
-from copy import copy, deepcopy
 
 
 device='cpu'
@@ -128,11 +126,11 @@ class ReplayMemory(object):
 			return batch
 
 		else:
-			# return random.sample(self.memory + self.temp_memory, batch_size)
-			if len(self.temp_memory) >= batch_size:
-				return random.sample(self.temp_memory, batch_size)
-			else:
-				return random.sample(self.memory + self.temp_memory, batch_size)
+			return random.sample(self.memory + self.temp_memory, batch_size)
+			# if len(self.temp_memory) >= batch_size:
+			# 	return random.sample(self.temp_memory, batch_size)
+			# else:
+			# 	return random.sample(self.memory + self.temp_memory, batch_size)
 
 	def __len__(self):
 		return len(self.memory)
@@ -334,65 +332,10 @@ class Value(nn.Module):
 		del target_critic
 
 
-class Actor(nn.Module):
-	def __init__(self, state_dim, action_dim, max_action):
-		super(Actor, self).__init__()
-
-		self.l1 = nn.Linear(state_dim, 64)
-		self.l2 = nn.Linear(64, 64)
-		self.l3 = nn.Linear(64, action_dim)
-		
-		self.max_action = max_action
-
-
-	def forward(self, x):
-		x = F.relu(self.l1(x))
-		x = F.relu(self.l2(x))
-		x = self.max_action * torch.tanh(self.l3(x)) 
-		return x
-
-
-class Critic(nn.Module):
-	def __init__(self, state_dim, action_dim):
-		super(Critic, self).__init__()
-
-		# Q1 architecture
-		self.l1 = nn.Linear(state_dim + action_dim, 64)
-		self.l2 = nn.Linear(64, 64)
-		self.l3 = nn.Linear(64, 1)
-
-		# Q2 architecture
-		self.l4 = nn.Linear(state_dim + action_dim, 64)
-		self.l5 = nn.Linear(64, 64)
-		self.l6 = nn.Linear(64, 1)
-
-
-	def forward(self, x, u):
-		xu = torch.cat([x, u], 1)
-
-		x1 = F.relu(self.l1(xu))
-		x1 = F.relu(self.l2(x1))
-		x1 = self.l3(x1)
-
-		x2 = F.relu(self.l4(xu))
-		x2 = F.relu(self.l5(x2))
-		x2 = self.l6(x2)
-		return x1, x2
-
-
-	def Q1(self, x, u):
-		xu = torch.cat([x, u], 1)
-
-		x1 = F.relu(self.l1(xu))
-		x1 = F.relu(self.l2(x1))
-		x1 = self.l3(x1)
-		return x1 
-
 # Ornstein-Ulhenbeck Process
 # Taken from #https://github.com/vitchyr/rlkit/blob/master/rlkit/exploration_strategies/ou_strategy.py
 class OUNoise(object):
     def __init__(self, action_space, mu=0.0, theta=0.15, max_sigma=0.3, min_sigma=0.3, decay_period=100000):
-    # def __init__(self, action_space, mu=0.0, theta=0.05, max_sigma=0.25, min_sigma=0.25, decay_period=100000):
         self.mu           = mu
         self.theta        = theta
         self.sigma        = max_sigma
@@ -417,26 +360,4 @@ class OUNoise(object):
         ou_state = self.evolve_state()
         self.sigma = self.max_sigma - (self.max_sigma - self.min_sigma) * min(1.0, t / self.decay_period)
         return np.clip(action + multiplier*ou_state, self.low, self.high)
-        # return np.clip(action + ou_state, self.low, self.high)
-
-
-class OrnsteinUhlenbeckActionNoise:
-	def __init__(self, mu=0, sigma=0.3, theta=.15, dt=1e-3, x0=None):
-		self.theta = theta
-		self.mu = mu
-		self.sigma = sigma
-		self.dt = dt
-		self.x0 = x0
-		self.reset()
-
-	def __call__(self):
-		x = self.x_prev + self.theta * (self.mu - self.x_prev) * self.dt + self.sigma * np.sqrt(self.dt) * np.random.normal(size=self.mu.shape)
-		self.x_prev = x
-		return x
-
-	def reset(self):
-		self.x_prev = self.x0 if self.x0 is not None else np.zeros_like(self.mu)
-
-	def __repr__(self):
-		return 'OrnsteinUhlenbeckActionNoise(mu={}, sigma={})'.format(self.mu, self.sigma)
 

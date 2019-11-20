@@ -1,6 +1,5 @@
 import numpy as np
 import matplotlib.pyplot as plt
-# import gym
 import sys
 
 import torch
@@ -13,21 +12,37 @@ from torch.autograd import grad
 from rewardfunctions import *
 
 import pdb
-
 from scipy import linalg
-# from networks import *
-# from models import *
+
 
 #device = 'cuda' if torch.cuda.is_available() else 'cpu'
 device = 'cpu'
 
 def count_parameters(model):
+	'''Count total number of trainable parameters in argument
+	Args:
+		model: the function whose parameters to count
+
+	Returns:
+		int: number of trainable parameters in model
+	'''
 	return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
+
 def non_decreasing(L):
+	''' Determine whether a list of numbers is in non-decreasing order
+	Args:
+		L: list of floats 
+
+	Returns:
+		bool: if list is in non-decreasing order
+	'''
 	return all(x>=y for x, y in zip(L, L[1:]))
 
+
 def discount_rewards(list_of_rewards, discount, center=True, batch_wise=False):
+	'''Return 
+	'''
 	if isinstance(list_of_rewards, list) or isinstance(list_of_rewards, np.ndarray):
 		list_of_rewards = np.asarray(list_of_rewards, dtype=np.float32)
 		r = np.zeros_like(list_of_rewards)
@@ -334,7 +349,8 @@ def calc_actual_state_values(target_critic, rewards, states, actions, discount):
 	return state_values_true
 
 
-def compute_returns(self, obs, action, reward, next_obs, done):  # pylint: disable=unused-argument
+def compute_returns(self, obs, action, reward, next_obs, done):
+	
 	with torch.no_grad():
 		values, dist = self.ac_net(obs)
 		if not done[-1]:
@@ -355,221 +371,16 @@ def compute_returns(self, obs, action, reward, next_obs, done):  # pylint: disab
 	return returns, log_probs, values
 
 
-def get_selected_log_probabilities(policy_estimator, states_tensor, actions_tensor):#, batch_actions):
+def get_selected_log_probabilities(policy_estimator, states_tensor, actions_tensor):
 
 	action_probs = policy_estimator.get_action_probs(states_tensor)
 	if not policy_estimator.continuous:
 		c = Categorical(action_probs[0])
 		selected_log_probs = c.log_prob(actions_tensor)
-		
-		# log_probs = torch.log(torch.clamp(action_probs[0],min=1e-5))
-		# if ((log_probs < -100).any()):
-		# 	pdb.set_trace()
-		# selected_log_probs = log_probs.view(-1,2).gather(1, actions_tensor.view(-1,1))
-		# selected_log_probs = torch.index_select(log_probs, 1, actions_tensor)[range(len(actions_tensor)), range(len(actions_tensor))]
+
 	else:
 		n = Normal(*action_probs)
 		selected_log_probs = n.log_prob(actions_tensor)
-		#entropies = n.entropy()
 
-	return selected_log_probs#, entropies
-
-
-#################### IGNORE BELOW ##############################
-
-##doesn't work so well now, next_step_state_val[:,:-4] this part is probably wrong
-def mle_multistep_loss(P_hat, policy, val_states_next_tensor, state_actions_val, n_actions, max_actions, R_range, continuous_actionspace=False, device='cpu'):
-
-	squared_errors_val = torch.zeros_like(val_states_next_tensor)
-
-	horizon = R_range - 1
-	step_state_val = state_actions_val.to(device)[:,:-horizon]
-
-	with torch.no_grad():
-		for step in range(max_actions*2-1):
-			next_step_state_val = P_hat(step_state_val)
-
-			if step==0:
-				err1_step = torch.mean((val_states_next_tensor[:,:-horizon] - next_step_state_val)**2)
-			elif step == 5:
-				err5_step = torch.mean((val_states_next_tensor[:,5:5+max_actions*2-horizon] - next_step_state_val[:,:-4])**2)
-			elif step == 10:
-				err10_step = torch.mean((val_states_next_tensor[:,10:10+max_actions*2-horizon] - next_step_state_val[:,:-9])**2)
-			elif step == 18:
-				err20_step = torch.mean((val_states_next_tensor[:,18:18+max_actions*2-horizon] - next_step_state_val[:,:-17])**2)
-
-			#squared_errors_val += F.pad(input=(val_states_next_tensor[:,step:,:] - next_step_state_val)**2, pad=(0,0,step,0,0,0), mode='constant', value=0)
-			shortened_val = next_step_state_val
-			action_probs_val = policy(torch.DoubleTensor(shortened_val))
-			
-			if not continuous_actionspace:
-				c_val = Categorical(action_probs_val[0])
-				a_val = c_val.sample().type(torch.DoubleTensor).to(device)
-				step_state_val = torch.cat((shortened_val, convert_one_hot(a_val, n_actions).unsqueeze(2)),dim=2)
-			else:
-				c_val = Normal(*action_probs_val)
-				a_val = torch.clamp(c_val.rsample(), min=-2.0, max=2.0)
-				step_state_val = torch.cat((shortened_val, a_val),dim=2)
-
-	# if squared_errors_val.shape < 2:
-	# 	squared_errors_val.unsqueeze(0)
-	
-	# err_1step = torch.mean(squared_errors_val[:,1])
-	# err_5step = torch.mean(squared_errors_val[:,5])
-	# err_10step = torch.mean(squared_errors_val[:,10])
-	# err_10step = torch.mean(squared_errors_val[:,19])
-
-	# try:
-	# 	err_50step = torch.mean(squared_errors_val[:,50])
-	# 	err_100step = torch.mean(squared_errors_val[:,100])
-	# except:
-	# 	err_50step = 0
-	# 	err_100step = torch.mean(squared_errors_val[:,-1])
-
-	print("Multistep error values:", err1_step, err5_step, err10_step, err20_step, "\n")	
-
-	return err1_step
-
-
-def compute_normalization(data):
-    """
-    Write a function to take in a dataset and compute the means, and stds.
-    Return 6 elements: mean of s_t, std of s_t, mean of (s_t+1 - s_t), std of (s_t+1 - s_t), mean of actions, std of actions
-    """
-
-    # flatten dataset across all paths
-    observations = np.stack([item.state for item in data.memory])
-    next_observations = np.stack([item.next_state for item in data.memory])
-    actions = np.stack([item.action for item in data.memory])
-    
-    mean_obs = torch.tensor(np.mean(observations, axis=0)).unsqueeze(0)
-    std_obs = torch.tensor(np.std(observations, axis=0)).unsqueeze(0)
-    
-    mean_deltas =  torch.tensor(np.mean(next_observations - observations, axis=0)).unsqueeze(0)
-    std_deltas = torch.tensor(np.std(next_observations - observations, axis=0)).unsqueeze(0)
-    
-    mean_actions = torch.tensor(np.mean(actions, axis=0)).unsqueeze(0)
-    std_actions = torch.tensor(np.std(actions, axis=0)).unsqueeze(0)
-
-    return mean_obs, std_obs, mean_deltas, std_deltas, mean_actions, std_actions
-
-
-# def paml_validation_loss(env, P_hat, policy, val_states_prev_tensor, val_states_next_tensor, actions_tensor_val, rewards_tensor_val, R_range, val_size, n_actions, max_actions, continuous_actionspace=False, device='cpu'):
-
-# 	state_actions_val = torch.cat((val_states_prev_tensor, actions_tensor_val),dim=2)
-
-# 	policy.zero_grad()
-# 	multiplier = torch.arange(max_actions,0,-1).repeat(val_size,1).unsqueeze(2).type(torch.DoubleTensor).to(device)
-# 	true_log_probs_t = torch.sum(
-# 						get_selected_log_probabilities(
-# 							policy, 
-# 							val_states_prev_tensor, 
-# 							actions_tensor_val, 
-# 							range(actions_tensor_val.shape[0])
-# 							) * rewards_tensor_val #* multiplier
-# 						, dim=1)
-
-# 	true_log_probs = torch.mean(true_log_probs_t, dim=0)
-# 	true_pe_grads = grad(true_log_probs, policy.parameters(), create_graph=True)
-
-
-# 	step_state_action_val = state_actions_val.to(device)
-# 	k_step_log_probs = torch.zeros((R_range, val_size, n_actions))
-
-# 	policy.zero_grad()
-# 	for step in range(R_range):
-# 		with torch.no_grad():
-# 			next_step_state = P_hat(step_state_action_val)
-# 		#print('states_mean:', torch.mean(next_step_state))
-# 		shortened = next_step_state[:,:-1,:]
-
-# 		with torch.no_grad():
-# 			action_probs = policy(torch.DoubleTensor(shortened))
-			
-# 			if not continuous_actionspace:
-# 				c = Categorical(action_probs)
-# 				actions_t_l = c.sample() 
-# 				step_state_action_val = torch.cat((shortened,convert_one_hot(actions_t_l, n_actions)),dim=2)
-# 			else:
-# 				c = Normal(*action_probs)
-# 				actions_t_l = torch.clamp(c.rsample(), min=-2.,max=2.)
-# 				step_state_action_val = torch.cat((shortened, actions_t_l),dim=2)
-
-
-# 		model_rewards_t = get_reward_fn(env, shortened, actions_t_l)
-# 		model_log_probs = torch.sum(
-# 						get_selected_log_probabilities(
-# 								policy, 
-# 								shortened,
-# 								actions_t_l, range(actions_t_l.shape[0])) * 
-# 								model_rewards_t
-# 							, dim=1)
-
-# 		#pdb.set_trace()
-# 		k_step_log_probs[step] = model_log_probs#.squeeze()
-
-# 	model_log_probs = torch.mean(torch.sum(k_step_log_probs, dim=0))
-
-# 	model_pe_grads = grad(model_log_probs, policy.parameters(), create_graph=True)
-# 	#total_log_probs.backward(retain_graph=True)
-# 	#model_pe_grads = [x.grad for x in pe.parameters()]
-
-# 	model_loss_val = 0
-# 	for i in range(len(true_pe_grads)):
-# 		model_loss_val += torch.sqrt(torch.sum((model_pe_grads[i] - true_pe_grads[i])**2))
-
-# 	print('PAML validation loss:', model_loss_val.detach().data.cpu())
-
-# 	return model_loss_val.detach().data
-
-
-
-# def collect_data(env, policy, episodes, n_actions, n_states, R_range, max_actions, continuous_actionspace=False, device='cpu'):
-# 	states_prev_list = []
-# 	states_next_list = []
-# 	all_actions_list = []
-# 	all_rewards_list = []
-
-# 	for ep in range(episodes):
-# 		s = env.reset()
-# 		done = False
-# 		states_list = [s]
-# 		actions_list = []
-# 		rewards_list = []
-# 		while len(actions_list) < max_actions:
-# 			with torch.no_grad():
-# 				if device == 'cuda':
-# 					action_probs = policy(torch.cuda.DoubleTensor(s))
-# 				else:
-# 					action_probs = policy(torch.DoubleTensor(s))
-
-# 				if not continuous_actionspace:
-# 					c = Categorical(action_probs[0])
-# 					a = c.sample() 
-# 				else:
-# 					c = Normal(*action_probs)
-# 					a = c.rsample()
-
-# 				s_prime, r, done, _ = env.step(a.cpu().numpy() - 1)
-# 				states_list.append(s_prime)
-# 				rewards_list.append(r)
-
-# 				if not continuous_actionspace:
-# 					actions_list.append(convert_one_hot(a, n_actions))
-# 				else:
-# 					actions_list.append(a)
-
-# 				s = s_prime
-
-# 		states_prev_list.extend(states_list[:-R_range-1])
-# 		states_next_list.extend(states_list[R_range+1:])
-# 		all_actions_list.extend(actions_list)
-# 		all_rewards_list.extend(rewards_list)
-
-# 	states_prev_tensor = torch.DoubleTensor(states_prev_list).to(device).view(episodes, -1, n_states)
-# 	states_next_tensor = torch.DoubleTensor(states_next_list).to(device).view(episodes, -1, n_states)
-# 	actions_tensor = torch.stack(all_actions_list).type(torch.DoubleTensor).to(device).view(episodes, -1, n_actions)
-# 	rewards_tensor = torch.DoubleTensor(all_rewards_list).to(device).view(episodes, -1, n_actions)
-
-# 	return states_prev_tensor, states_next_tensor, actions_tensor, rewards_tensor
+	return selected_log_probs
 

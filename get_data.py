@@ -54,7 +54,7 @@ def paml_train(P_hat,
 	end_of_trajectory = 1
 	ell = 0
 	num_iters = num_iters if train else 1
-	model_opt = optim.Adam(P_hat.parameters(), lr=1e-7)#, momentum=0.90, nesterov=True)
+	model_opt = optim.SGD(P_hat.parameters(), lr=1e-3)#, momentum=0.90, nesterov=True)
 	#calculate true gradients
 	pe.zero_grad()
 	true_log_probs = get_selected_log_probabilities(pe, true_x_next, true_a_prime_list).squeeze()
@@ -452,7 +452,7 @@ def main(
 	policy_optimizer = optim.Adam(policy_estimator.parameters(), lr=0.0001)
 	# policy_estimator.load_state_dict(torch.load('policy_reinforce_use_model_True_horizon20_traj21.pth',map_location=device))
 
-	P_hat = DirectEnvModel(states_dim, actions_dim, MAX_TORQUE, mult=action_multiplier, model_size=model_size)#, action_multiplier=0.1)
+	P_hat = DirectEnvModel(states_dim, actions_dim, MAX_TORQUE, mult=action_multiplier, model_size=model_size, limit_output=True)#, action_multiplier=0.1)
 	P_hat.double()
 	# P_hat.load_state_dict(torch.load('trained_model_paml_lindyn_horizon5_traj6.pth', map_location=device))
 	# P_hat.load_state_dict(torch.load('1model_paml_checkpoint_train_False_lin_dyn_horizon20_traj21_using1states.pth', map_location=device))

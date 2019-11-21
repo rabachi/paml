@@ -102,61 +102,62 @@ class DirectEnvModel(torch.nn.Module):
 			raise NotImplementedError
 		return mu
 
-	def unroll_small(self, env, state_action, policy, steps_to_unroll=1, salient_states_dim=0, noise=None):
-		if state_action is None:
-			return -1	
-		batch_size = state_action.shape[0]
-		max_actions = state_action.shape[1]
-		actions_dim = state_action[0,0,self.states_dim:].shape[0]
 
-		x0 = state_action[:,:,:states_dim]
-		with torch.no_grad():
-			a0 = policy.sample_action(x0[:,:,:policy_states_dim])
-			if isinstance(policy, DeterministicPolicy):
-				a0 = torch.from_numpy(noise.get_action(a0.numpy(), 0))
+	# def unroll_small(self, env, state_action, policy, steps_to_unroll=1, salient_states_dim=0, noise=None):
+	# 	if state_action is None:
+	# 		return -1	
+	# 	batch_size = state_action.shape[0]
+	# 	max_actions = state_action.shape[1]
+	# 	actions_dim = state_action[0,0,self.states_dim:].shape[0]
 
-		pdb.set_trace()
-		x0_norm = (x0 - self.mean_states) / (self.std_states + 1e-7)
-		a0_norm = (a0 - self.mean_actions) / (self.std_actions + 1e-7)
-		state_action_norm = torch.cat((x0_norm, a0_norm),dim=2)
-		state_action = torch.cat((x0, a0),dim=2)
+	# 	x0 = state_action[:,:,:states_dim]
+	# 	with torch.no_grad():
+	# 		a0 = policy.sample_action(x0[:,:,:policy_states_dim])
+	# 		if isinstance(policy, DeterministicPolicy):
+	# 			a0 = torch.from_numpy(noise.get_action(a0.numpy(), 0))
 
-		x_list = [x0]
-		a_list = [a0]
+	# 	pdb.set_trace()
+	# 	x0_norm = (x0 - self.mean_states) / (self.std_states + 1e-7)
+	# 	a0_norm = (a0 - self.mean_actions) / (self.std_actions + 1e-7)
+	# 	state_action_norm = torch.cat((x0_norm, a0_norm),dim=2)
+	# 	state_action = torch.cat((x0, a0),dim=2)
 
-		for s in range(steps_to_unroll - 1):
-			if torch.isnan(torch.sum(state_action)):
-				print('found nan in state')
-				print(state_action)
-				pdb.set_trace()
+	# 	x_list = [x0]
+	# 	a_list = [a0]
 
-			pdb.set_trace() #there might be a problem with dim in the function below given that I'm only applying it to one state and action in this case but function was written for tensors
-			x_next = predict(state_action[:,:,:states_dim], state_action[:,:,states_dim:])#state_action_norm[:,:,:states_dim] + self.forward(state_action_norm.squeeze())#.unsqueeze(1)
-			if len(x_next.shape) < 3:		
-				x_next = x_next.unsqueeze(1)
+	# 	for s in range(steps_to_unroll - 1):
+	# 		if torch.isnan(torch.sum(state_action)):
+	# 			print('found nan in state')
+	# 			print(state_action)
+	# 			pdb.set_trace()
 
-			with torch.no_grad():
-				a = policy.sample_action(x_next[:,:,:policy_states_dim])
-				if isinstance(policy, DeterministicPolicy):
-					a = torch.from_numpy(noise.get_action(a.numpy(), s))
+	# 		pdb.set_trace() #there might be a problem with dim in the function below given that I'm only applying it to one state and action in this case but function was written for tensors
+	# 		x_next = predict(state_action[:,:,:states_dim], state_action[:,:,states_dim:])#state_action_norm[:,:,:states_dim] + self.forward(state_action_norm.squeeze())#.unsqueeze(1)
+	# 		if len(x_next.shape) < 3:		
+	# 			x_next = x_next.unsqueeze(1)
 
-			next_state_action = torch.cat((x_next, a),dim=2)
+	# 		with torch.no_grad():
+	# 			a = policy.sample_action(x_next[:,:,:policy_states_dim])
+	# 			if isinstance(policy, DeterministicPolicy):
+	# 				a = torch.from_numpy(noise.get_action(a.numpy(), s))
 
-			a_list.append(a)
-			x_list.append(x_next)
-			state_action = next_state_action
+	# 		next_state_action = torch.cat((x_next, a),dim=2)
 
-		x_list = torch.cat(x_list, 2).view(batch_size, -1, steps_to_unroll+1, states_dim)
-		a_list = torch.cat(a_list, 2).view(batch_size, -1, steps_to_unroll+1, actions_dim)
+	# 		a_list.append(a)
+	# 		x_list.append(x_next)
+	# 		state_action = next_state_action
 
-		x_curr = x_list[:,:,:-1,:]
-		x_next = x_list[:,:,1:,:]
-		a_used = a_list[:,:,:-1,:]
-		a_prime = a_list[:,:,1:,:]
+	# 	x_list = torch.cat(x_list, 2).view(batch_size, -1, steps_to_unroll+1, states_dim)
+	# 	a_list = torch.cat(a_list, 2).view(batch_size, -1, steps_to_unroll+1, actions_dim)
+
+	# 	x_curr = x_list[:,:,:-1,:]
+	# 	x_next = x_list[:,:,1:,:]
+	# 	a_used = a_list[:,:,:-1,:]
+	# 	a_prime = a_list[:,:,1:,:]
 		
-		return x_curr, x_next, a_used, a_prime 
+	# 	return x_curr, x_next, a_used, a_prime 
 
-	def unroll(self, state_action, policy, states_dim, A_numpy, steps_to_unroll=2, continuous_actionspace=True, use_model=True, policy_states_dim=2, extra_dims_stable=False, noise=None, epsilon=None, epsilon_decay=None,env='lin_dyn'):
+	def unroll(self, state_action, policy, states_dim, A_numpy, steps_to_unroll=2, continuous_actionspace=True, use_model=True, salient_states_dim=2, extra_dims_stable=False, noise=None, epsilon=None, epsilon_decay=None,env='lin_dyn', using_delta=False):
 		need_rewards = False if env != 'lin_dyn' else True
 		if state_action is None:
 			return -1	
@@ -172,11 +173,11 @@ class DirectEnvModel(torch.nn.Module):
 					(state_action[0,:,0].shape[0],1,1) #repeat along trajectory size, for every state
 					)
 				).to(device)
-			extra_dim = states_dim - policy_states_dim
+			extra_dim = states_dim - salient_states_dim
 			B = torch.from_numpy(
 				np.block([
-						 [0.1*np.eye(policy_states_dim),            np.zeros((policy_states_dim, extra_dim))],
-						 [np.zeros((extra_dim, policy_states_dim)), np.zeros((extra_dim,extra_dim))          ]
+						 [0.1*np.eye(salient_states_dim),            np.zeros((salient_states_dim, extra_dim))],
+						 [np.zeros((extra_dim, salient_states_dim)), np.zeros((extra_dim,extra_dim))          ]
 						])
 				).to(device)
 		elif A_numpy is None and not use_model:
@@ -184,41 +185,43 @@ class DirectEnvModel(torch.nn.Module):
 
 		x0 = state_action[:,:,:states_dim]
 		with torch.no_grad():
-			a0 = policy.sample_action(x0[:,:,:policy_states_dim])
+			# a0 = policy.sample_action(x0[:,:,:policy_states_dim])
+			a0 = policy.sample_action(x0[:,:,:states_dim])
 			if isinstance(policy, DeterministicPolicy):
-				# a0 += torch.from_numpy(noise()*max(0, epsilon)) #try without noise
-				# a0 = torch.clamp(a0, min=-1.0, max=1.0)
 				a0 = torch.from_numpy(noise.get_action(a0.numpy(), 0, multiplier=1.))
 
 		state_action = torch.cat((x0, a0),dim=2)
 		if use_model:	
 			#USING delta 
-			x_t_1 = x0.squeeze() + self.forward(state_action.squeeze())#.unsqueeze(1)
-			# x_t_1 = self.forward(state_action.squeeze())#.unsqueeze(1)
+			if using_delta:
+				x_t_1 = x0.squeeze() + self.forward(state_action.squeeze())#.unsqueeze(1)
+			else:
+				x_t_1 = self.forward(state_action.squeeze())#.unsqueeze(1)
 			if len(x_t_1.shape) < 3:
 				x_t_1 = x_t_1.unsqueeze(1)
 		else:
-			x_t_1  = torch.einsum('jik,ljk->lji',[A,x0[:,:,:policy_states_dim]])
+			# x_t_1  = torch.einsum('jik,ljk->lji',[A,x0[:,:,:policy_states_dim]])
+			x_t_1  = torch.einsum('jik,ljk->lji',[A,x0[:,:,:states_dim]])
 			if not extra_dims_stable:
-				x_t_1 = add_irrelevant_features(x_t_1, states_dim-policy_states_dim, noise_level=0.4)
+				x_t_1 = add_irrelevant_features(x_t_1, states_dim-salient_states_dim, noise_level=0.4)
 				x_t_1 = x_t_1 + 0.1*a0#torch.einsum('ijk,kk->ijk',[a0,B])
 			else:
+				# if actions_dim < states_dim:
+				# 	a0_appended = torch.cat((a0, torch.zeros((a0.shape[0],a0.shape[1],states_dim-actions_dim)).double()),2)
 				x_t_1 = x_t_1 + torch.einsum('ijk,kk->ijk',[a0,B])
 
 		x_list = [x0, x_t_1]
 
 		with torch.no_grad():
-			a1 = policy.sample_action(x_list[1][:,:,:policy_states_dim])
+			# a1 = policy.sample_action(x_list[1][:,:,:policy_states_dim])
+			a1 = policy.sample_action(x_list[1][:,:,:states_dim])
 			if isinstance(policy, DeterministicPolicy):
-				# epsilon -= epsilon_decay
-				# a1 += torch.from_numpy(noise()*max(0, epsilon)) #try without noise
-				# a1 = torch.clamp(a1, min=-1.0, max=1.0)
 				a1 = torch.from_numpy(noise.get_action(a1.numpy(), 1, multiplier=1.))
 
 		a_list = [a0, a1]
 		# r_list = [get_reward_fn('lin_dyn',x_list[0][:,:,:policy_states_dim], a0).unsqueeze(2), get_reward_fn('lin_dyn',x_t_1[:,:,:policy_states_dim], a1).unsqueeze(2)]
 		if need_rewards:
-			r_list = [get_reward_fn(env, x_list[0][:,:,:policy_states_dim], a0).unsqueeze(2), get_reward_fn(env, x_t_1[:,:,:policy_states_dim], a1).unsqueeze(2)]
+			r_list = [get_reward_fn(env, x_list[0][:,:,:salient_states_dim], a0).unsqueeze(2), get_reward_fn(env, x_t_1[:,:,:salient_states_dim], a1).unsqueeze(2)]
 
 		state_action = torch.cat((x_t_1, a1),dim=2)
 
@@ -230,33 +233,34 @@ class DirectEnvModel(torch.nn.Module):
 
 			if use_model:
 				#USING delta
-				x_next = state_action[:,:,:states_dim].squeeze() + self.forward(state_action.squeeze())#.unsqueeze(1)
-				# x_next = self.forward(state_action.squeeze())#.unsqueeze(1)
+				if using_delta:
+					x_next = state_action[:,:,:states_dim].squeeze() + self.forward(state_action.squeeze())
+				else:
+					x_next = self.forward(state_action.squeeze())
+
 				if len(x_next.shape) < 3:		
 					x_next = x_next.unsqueeze(1)
 			else:
-				x_next  = torch.einsum('jik,ljk->lji',[A,state_action[:,:,:policy_states_dim]])
+				# x_next  = torch.einsum('jik,ljk->lji',[A,state_action[:,:,:policy_states_dim]])
+				x_next  = torch.einsum('jik,ljk->lji',[A,state_action[:,:,:states_dim]])
 				if not extra_dims_stable:
-					x_next = add_irrelevant_features(x_next, states_dim-policy_states_dim, noise_level=0.4)
+					x_next = add_irrelevant_features(x_next, states_dim-salient_states_dim, noise_level=0.4)
 					x_next = x_next + 0.1*state_action[:,:,states_dim:]#torch.einsum('ijk,kk->ijk',[state_action[:,:,states_dim:],B])#0.1*state_action[:,:,states_dim:]
 				else:
-					x_next = x_next + torch.einsum('ijk,kk->ijk',[state_action[:,:,states_dim:],B])#0.1*state_action[:,:,states_dim:]
+					# if actions_dim < states_dim:
+					# 	curr_action = torch.cat((state_action[:,:,states_dim:], torch.zeros((state_action.shape[0],state_action.shape[1],states_dim-actions_dim)).double()),2)
+					x_next = x_next + torch.einsum('ijk,kk->ijk',[state_action[:,:,states_dim:],B])
 
-			#action_taken = state_action[:,:,states_dim:]
 			with torch.no_grad():
-				a = policy.sample_action(x_next[:,:,:policy_states_dim])
+				# a = policy.sample_action(x_next[:,:,:policy_states_dim])
+				a = policy.sample_action(x_next[:,:,:states_dim])
 				if isinstance(policy, DeterministicPolicy):
-					# epsilon -= epsilon_decay
-					# a += torch.from_numpy(noise()*max(0, epsilon)) #try without noise
-					# a = torch.clamp(a, min=-1.0, max=1.0)
 					a = torch.from_numpy(noise.get_action(a.numpy(), s, multiplier=1.))
-
 
 			# r = get_reward_fn('lin_dyn', x_next[:,:,:policy_states_dim], a).unsqueeze(2) 
 			if need_rewards:
 				# r = get_reward_fn(env, x_next[:,:,:policy_states_dim], a).unsqueeze(2) #this is where improvement happens when R_range = 1
-				r = get_reward_fn(env, x_next[:,:,:2], a).unsqueeze(2) 
-				# r = get_reward_fn('lin_dyn', state_action[:,:,:states_dim], a)
+				r = get_reward_fn(env, x_next[:,:,:salient_states_dim], a).unsqueeze(2) 
 			next_state_action = torch.cat((x_next, a),dim=2)
 			
 			############# for discrete, needs testing #######################
@@ -339,14 +343,7 @@ class DirectEnvModel(torch.nn.Module):
 		noise.reset()
 		prev_grad = torch.zeros(count_parameters(self)).double()
 		lambda_mle = 0.25
-		# noise = OUNoise(env.action_space)
-		# noise = OrnsteinUhlenbeckActionNoise(mu=np.zeros(actions_dim))	
-		
-		# model_opt = optim.SGD(self.parameters(), lr=lr)#, momentum=0.90, nesterov=True)
 
-		# self.mean_states, self.std_states, self.mean_deltas, self.std_deltas, self.mean_actions, self.std_actionss = compute_normalization(dataset)
-		# epsilon = 1
-		# epsilon_decay = 1./100000
 		ell = 0
 		saved = False
 		cos_grads = []
@@ -356,31 +353,6 @@ class DirectEnvModel(torch.nn.Module):
 			#HAVE TO MAKE THIS GRADIENT ESTIMATE COME FROM MULTIPLE next states from the same states_prev 
 			#think about how to do this here
 			true_states_prev = torch.tensor([samp.state for samp in batch]).double().to(device)
-
-			# #I could do a batch of just 1. Then unroll M times. 
-			# M = 1
-			# torch.autograd.set_detect_anomaly(True)
-			# # true_states_next = torch.zeros((batch_size, M, states_dim)).double()
-			# true_actions_np = np.zeros((batch_size, M, actions_dim))
-			# # true_full_states = [samp.full_state for samp in batch]
-			# true_pe_grads = torch.zeros((batch_size, count_parameters(actor))).double()
-			
-			# for b in range(batch_size):
-			# 	true_states_next = torch.zeros((M, states_dim)).double()
-			# 	env.state = true_states_prev[b]
-			# 	# env.env.set_state(true_full_states[b][:9],true_full_states[b][9:])
-			# 	for i in range(M):
-			# 		true_actions_np[b][i] = actor.sample_action(true_states_prev[b]).detach().numpy()+np.random.normal(scale=0.3,size=1)
-			# 		true_states_next[i] = torch.tensor(env.step(true_actions_np[b][i])[0]).double().to(device)
-				
-			# 	actor.zero_grad()
-			# 	true_policy_loss = -critic(true_states_next, actor.sample_action(true_states_next)).mean()
-			# 	true_pe_grads_attached = grad(true_policy_loss, actor.parameters(), create_graph=True)
-			# 	true_pe_grads_ = torch.DoubleTensor()
-			# 	for g in range(len(true_pe_grads_attached)):
-			# 		true_pe_grads_ = torch.cat((true_pe_grads_,true_pe_grads_attached[g].detach().view(-1)))
-			# 	true_pe_grads[b] = true_pe_grads_
-
 			true_states_next = torch.tensor([samp.next_state for samp in batch]).double().to(device)
 			# true_rewards_tensor = torch.tensor([samp.reward for samp in batch]).double().to(device).unsqueeze(1)
 			true_actions_tensor = torch.tensor([samp.action for samp in batch]).double().to(device)
@@ -389,9 +361,6 @@ class DirectEnvModel(torch.nn.Module):
 			actor.zero_grad()
 
 			#compute loss for actor
-			# true_policy_loss = -critic(true_states_next[:,:salient_states_dim], actor.sample_action(true_states_next[:,:salient_states_dim]))
-			# true_policy_loss = -critic(true_states_next, actor.sample_action(true_states_next[:,:salient_states_dim]))
-			# true_policy_loss = -critic(true_states_next[:,:salient_states_dim], actor.sample_action(true_states_next))
 			true_policy_loss = -critic(true_states_next, actor.sample_action(true_states_next))
 
 			true_term = true_policy_loss.mean()
@@ -402,14 +371,10 @@ class DirectEnvModel(torch.nn.Module):
 			for g in range(len(true_pe_grads_attached)):
 				true_pe_grads = torch.cat((true_pe_grads,true_pe_grads_attached[g].detach().view(-1)))
 
-			#probably don't need these ... .grad is not accumulated with the grad() function
-			# actor.zero_grad() 
-			#comment the line below out after 
-			# true_actions_tensor = torch.tensor([samp.action for samp in batch]).double().to(device)
 			step_state = torch.cat((true_states_prev, true_actions_tensor),dim=1).unsqueeze(1)
 			if use_model:
 				# model_x_curr, model_x_next, model_a_list, model_r_list, _ = P_hat.unroll(step_state, actor, states_dim, None, steps_to_unroll=1, continuous_actionspace=True, use_model=True, policy_states_dim=salient_states_dim, noise=noise, epsilon=epsilon, epsilon_decay=None, env=env)
-				model_x_curr, model_x_next, model_a_list, _, _ = self.unroll(step_state, actor, states_dim, None, steps_to_unroll=1, continuous_actionspace=True, use_model=True, policy_states_dim=states_dim, noise=noise, epsilon=epsilon, epsilon_decay=None, env=env)#salient_states_dim, noise=noise, epsilon=epsilon, epsilon_decay=None, env=env)
+				model_x_curr, model_x_next, model_a_list, _, _ = self.unroll(step_state, actor, states_dim, None, steps_to_unroll=1, continuous_actionspace=True, use_model=True, salient_states_dim=states_dim, noise=noise, epsilon=epsilon, epsilon_decay=None, env=env)#salient_states_dim, noise=noise, epsilon=epsilon, epsilon_decay=None, env=env)
 				#can remove these after unroll is fixed
 				model_x_curr = model_x_curr.squeeze(1).squeeze(1)
 				model_x_next = model_x_next.squeeze(1).squeeze(1)
@@ -438,52 +403,9 @@ class DirectEnvModel(torch.nn.Module):
 			model_pe_grads_split = grad(model_term.mean(),actor.parameters(), create_graph=True)
 			for g in range(len(model_pe_grads_split)):
 				model_pe_grads = torch.cat((model_pe_grads,model_pe_grads_split[g].view(-1)))
-			
-			# model_pe_grads = torch.zeros((batch_size, count_parameters(actor))).double()
-			# for b in range(batch_size):
-			# 	actor.zero_grad()
-			# 	model_pe_grads_ = torch.DoubleTensor()
-			# 	model_pe_grads_split = grad(model_policy_loss[b], actor.parameters(), create_graph=True)
-			# 	# model_pe_grads_split = grad(model_term.mean(),actor.parameters(), create_graph=True)
-			# 	for g in range(len(model_pe_grads_split)):
-			# 		model_pe_grads_ = torch.cat((model_pe_grads_,model_pe_grads_split[g].view(-1)))
-			# 	model_pe_grads[b] = model_pe_grads_
 
-			cos = nn.CosineSimilarity(dim=0, eps=1e-6)
-			# loss = MSE(true_pe_grads, model_pe_grads)
-			# loss = (1-cos(true_pe_grads,model_pe_grads)).mean()
-			# loss = MSE(model_policy_loss, true_policy_loss)
-			# loss_grads_split = grad(MSE(true_policy_loss,model_policy_loss), actor.parameters(), create_graph = True) 
-			# loss_grads = torch.DoubleTensor()
-			# for g in range(len(loss_grads_split)):
-			# 	loss_grads = torch.cat((loss_grads,loss_grads_split[g].view(-1)))
-			# pdb.set_trace()
-			# loss = (loss_grads / (2*(true_policy_loss - model_policy_loss))).sum(dim=1).mean()
-			
-
-			# norms_true_pe_grads.append(true_pe_grads.norm().data.cpu())
-			# norms_model_pe_grads.append(model_pe_grads.norm().data.cpu())
-			#mle_loss = torch.mean(torch.sum(((model_x_next - model_x_curr)-(true_states_next - true_states_prev))**2,dim=1))
 			paml_loss = torch.sqrt((true_pe_grads-model_pe_grads).pow(2).sum())
-			# print(cos(true_pe_grads, model_pe_grads).detach().data.cpu())
-			loss = paml_loss #+ lambda_mle * mle_loss #1 - cos(true_pe_grads, model_pe_grads)#MSE(true_pe_grads,model_pe_grads) + torch.sqrt((true_pe_grads-model_pe_grads).pow(2).sum())#dim=1).mean())#/num_starting_states) 1-cos(true_pe_grads, model_pe_grads)# torch.sqrt((true_pe_grads-model_pe_grads).pow(2).sum()) #
-			# if loss < 0.3:
-			# 	return
-			
-			# if loss.detach().cpu() < best_loss and use_model:
-				#Save model and losses so far
-				#if save_checkpoints:
-			# torch.save(self.state_dict(), os.path.join(file_location,'act_model_paml_state{}_salient{}_checkpoint_train_{}_{}_horizon{}_traj{}_{}.pth'.format(states_dim, salient_states_dim, train, env_name, R_range, max_actions + 1, file_id)))
-			# saved = True
-			# if save_checkpoints:
-
-			# np.save(os.path.join(file_location,'act_loss_paml_state{}_salient{}_checkpoint_train_{}_{}_horizon{}_traj{}_{}'.format(states_dim, salient_states_dim, train, env_name, R_range, max_actions + 1, file_id)), np.asarray(losses))
-
-			# np.save(os.path.join(file_location,'model_pe_grad_norms_state{}_salient{}_checkpoint_train_{}_{}_horizon{}_traj{}_{}'.format(states_dim, salient_states_dim, train, env_name, R_range, max_actions + 1, file_id)), np.asarray(norms_model_pe_grads))
-
-			# np.save(os.path.join(file_location,'true_pe_grad_norms_state{}_salient{}_checkpoint_train_{}_{}_horizon{}_traj{}_{}'.format(states_dim, salient_states_dim, train, env_name, R_range, max_actions + 1, file_id)), np.asarray(norms_true_pe_grads))
-			
-				# best_loss = loss.detach().cpu()
+			loss = paml_loss 
 
 			#update model
 			if train: 
@@ -494,11 +416,6 @@ class DirectEnvModel(torch.nn.Module):
 				for item in list(self.parameters()):
 					curr_grad = torch.cat((curr_grad,item.grad.view(-1)))
 
-				# print(curr_grad)
-				# print(t)
-				# print(cos(true_pe_grads, model_pe_grads))
-				# print(true_pe_grads.norm())
-				# print(model_pe_grads.norm())
 				nn.utils.clip_grad_value_(self.parameters(), 10.0)
 				# pdb.set_trace()
 				opt.step()
@@ -513,9 +430,6 @@ class DirectEnvModel(torch.nn.Module):
 				prev_grad = curr_grad
 				# lr_schedule.step()
 
-			# if train and i < 1: #and j < 1 
-			# 	initial_loss = losses[0]#.data.cpu()
-			# 	print('initial_loss',initial_loss)
 			else: 
 				print("-----------------------------------------------------------------------------------------------------")
 				print("Validation loss model: {} | R_range: {:3d} | batch_num: {:5d} | average validation paml_loss = {:.7f}".format(use_model, R_range, i, loss.data.cpu()))
@@ -532,44 +446,6 @@ class DirectEnvModel(torch.nn.Module):
 
 		return loss.data.cpu()
 
-	#next two methods should be combined
-	def mle_validation_loss(self, A_numpy, states_next, state_actions, policy, R_range, use_model=True, salient_dims=2):
-		with torch.no_grad():
-			continuous_actionspace = policy.continuous
-			squared_errors = torch.zeros_like(states_next)
-			step_state = state_actions.to(device)
-			states_dim = states_next.shape[-1]
-
-			for step in range(R_range - 1):
-				
-				if use_model:
-					next_step_state = self.forward(step_state)
-				else:
-					A = torch.from_numpy(
-						np.tile(
-							A_numpy,
-							(step_state[0,:,0].shape[0],1,1) #repeat along trajectory size, for every state
-							)
-						)
-					next_step_state = torch.einsum('jik,ljk->lji',[A,step_state[:,:,:salient_dims]]) + step_state[:,:,states_dim:]
-					#STILL NEED TO ADD IRRELEVANT FEATURES AND GET THESE RANDOM 5 and 2's out of here
-				try:
-					squared_errors += F.pad(input=(states_next[:,step:,:] - next_step_state)**2, pad=(0,0,step,0,0,0), mode='constant', value=0)
-				except:
-					pdb.set_trace()
-
-				#rolled_out_states_sums += shift_down(next_step_state,step, max_actions)
-
-				shortened = next_step_state[:,:-1,:]
-				if shortened.nelement() > 0:
-					a = policy.sample_action(torch.DoubleTensor(shortened[:,:,:states_dim]))	
-					step_state = torch.cat((shortened,a),dim=2)
-
-			#state_loss = torch.mean(squared_errors)#torch.mean((states_next - rolled_out_states_sums)**2)
-			model_loss = torch.mean(squared_errors) #+ reward_loss)# + done_loss)
-			#print("R_range: {}, negloglik  = {:.7f}".format(R_range, model_loss.data.cpu()))
-			
-		return squared_errors.mean()
 	
 	def train_mle(self, pe, state_actions, states_next, epochs, max_actions, R_range, opt, env_name, losses, states_dim, salient_states_dim, file_location, file_id, save_checkpoints=False, verbose=10):
 		best_loss = 1000
@@ -590,7 +466,7 @@ class DirectEnvModel(torch.nn.Module):
 				a = state_actions[:, step+1:, states_dim:]
 				step_state = torch.cat((shortened,a),dim=2)
 
-			model_loss = torch.mean(squared_errors) #+ reward_loss)# + done_loss)
+			model_loss = torch.mean(squared_errors)#torch.mean(torch.sum(squared_errors,dim=2))
 
 			if model_loss.detach().data.cpu() < best_loss and save_checkpoints:
 				torch.save(self.state_dict(), os.path.join(file_location,'model_mle_checkpoint_state{}_salient{}_reinforce_{}_horizon{}_traj{}_{}.pth'.format(states_dim, salient_states_dim, env_name, R_range, max_actions + 1, file_id)))

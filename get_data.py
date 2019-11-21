@@ -72,12 +72,12 @@ def paml_train(P_hat,
 	# 	true_pe_grads = torch.cat((true_pe_grads,true_pe_grads_attached[g].detach().view(-1)))
 
 	step_state = torch.cat((true_x_curr[:,:,0],true_a_list[:,:,0]),dim=2)
-	policy_states_dim = salient_states_dim if not extra_dims_stable else states_dim
+	policy_states_dim = salient_states_dim #if not extra_dims_stable else states_dim
 	for i in range(num_iters):
 		pe.zero_grad()
 		#calculate model gradients
 		#Do i need this line? seems to make a big difference .... 
-		model_x_curr, model_x_next, model_a_list, model_r_list, model_a_prime_list = P_hat.unroll(step_state[:,:unroll_num,:], pe, states_dim, A_numpy, steps_to_unroll=R_range, continuous_actionspace=True, use_model=use_model, policy_states_dim=policy_states_dim, extra_dims_stable=extra_dims_stable)
+		model_x_curr, model_x_next, model_a_list, model_r_list, model_a_prime_list = P_hat.unroll(step_state[:,:unroll_num,:], pe, states_dim, A_numpy, steps_to_unroll=R_range, continuous_actionspace=True, use_model=use_model, salient_states_dim=policy_states_dim, extra_dims_stable=extra_dims_stable, using_delta=False)
 
 		model_returns = discount_rewards(model_r_list[:,ell, 1:], discount, center=False, batch_wise=True)
 		model_log_probs = get_selected_log_probabilities(pe, model_x_next, model_a_prime_list).squeeze()
@@ -178,7 +178,7 @@ def reinforce(policy_estimator,
 	batch_actions = torch.zeros((batch_size, max_actions, actions_dim)).double()
 	batch_returns = torch.zeros((batch_size, max_actions, 1)).double()
 	print(use_model)
-	policy_states_dim = salient_states_dim if not extra_dims_stable else states_dim
+	policy_states_dim = salient_states_dim #if not extra_dims_stable else states_dim
 	for ep in range(int(num_episodes/batch_size)):
 		with torch.no_grad():
 			step_state = torch.zeros((batch_size, max_actions, states_dim+actions_dim)).double()
@@ -188,7 +188,7 @@ def reinforce(policy_estimator,
 			
 			step_state[:,:unroll_num,states_dim:] = policy_estimator.sample_action(step_state[:,:unroll_num,:states_dim])
 
-			model_x_curr, model_x_next, model_a_list, model_r_list, model_a_prime_list = P_hat.unroll(step_state[:,:unroll_num,:], policy_estimator, states_dim, A_numpy, steps_to_unroll=R_range, continuous_actionspace=True, use_model=use_model, policy_states_dim=policy_states_dim, extra_dims_stable=extra_dims_stable)
+			model_x_curr, model_x_next, model_a_list, model_r_list, model_a_prime_list = P_hat.unroll(step_state[:,:unroll_num,:], policy_estimator, states_dim, A_numpy, steps_to_unroll=R_range, continuous_actionspace=True, use_model=use_model, salient_states_dim=policy_states_dim, extra_dims_stable=extra_dims_stable, using_delta=False)
 
 			all_rewards.extend(model_r_list[:,ell,:-1].contiguous().view(-1,max_actions).sum(dim=1).tolist())
 
@@ -263,7 +263,7 @@ def plan_and_train(P_hat, policy_estimator, model_opt, policy_optimizer, num_sta
 	total_eps = 10000.
 	global_step = 0
 	skip_next_training = False
-	policy_states_dim = salient_states_dim if not extra_dims_stable else states_dim
+	policy_states_dim = salient_states_dim #if not extra_dims_stable else states_dim
 	while(global_step <= total_eps/num_starting_states):
 		if (global_step >= total_eps/num_starting_states - 5) or not skip_next_training:
 			with torch.no_grad():
@@ -275,7 +275,7 @@ def plan_and_train(P_hat, policy_estimator, model_opt, policy_optimizer, num_sta
 
 				train_step_state[:,:unroll_num,states_dim:] = policy_estimator.sample_action(train_step_state[:,:unroll_num,:states_dim])#I think all this does is make the visualizations look better, shouldn't affect performance (or visualizations ... )
 				#throw out old data
-				train_true_x_curr, train_true_x_next, train_true_a_list, train_true_r_list, train_true_a_prime_list = P_hat.unroll(train_step_state[:,:unroll_num,:], policy_estimator, states_dim, A_numpy, steps_to_unroll=R_range, continuous_actionspace=True, use_model=False, policy_states_dim=policy_states_dim, extra_dims_stable=extra_dims_stable)
+				train_true_x_curr, train_true_x_next, train_true_a_list, train_true_r_list, train_true_a_prime_list = P_hat.unroll(train_step_state[:,:unroll_num,:], policy_estimator, states_dim, A_numpy, steps_to_unroll=R_range, continuous_actionspace=True, use_model=False, salient_states_dim=policy_states_dim, extra_dims_stable=extra_dims_stable, using_delta=False)
 				train_true_returns = discount_rewards(train_true_r_list[:,0,1:], discount=discount, batch_wise=True, center=False)
 				
 				print("Checking policy performance on true dynamics ...", train_true_r_list.squeeze().sum(dim=1).mean())
@@ -323,7 +323,6 @@ def plan_and_train(P_hat, policy_estimator, model_opt, policy_optimizer, num_sta
 			# num_iters = int(np.ceil(num_iters * epsilon))	
 			# kwargs['num_iters'] = num_iters
 			if not skip_next_training:
-				pdb.set_trace()
 				P_hat = paml_train(**kwargs)
 			else:
 				skip_next_training = False

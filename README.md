@@ -19,7 +19,7 @@ This project also requires mujoco 2.0, which can be downloaded from: https://muj
 
 Sample commands for running experiments:
 
-REINFORCE (Williams 1992)
+### REINFORCE (Williams 1992)
 
 To run PAML experiment e.g. for states_dim = 50 (48 irrelevant dims) (see additional options by using help):
 ```
@@ -53,7 +53,7 @@ python parser.py --algo reinforce --model_type model_free --max_actions 200 --st
 ```
 And so on. More examples can be found in ```sbatch_reinforce.sh```.
 
-DDPG (Lillicrap et al. 2017)
+### DDPG (Lillicrap et al. 2017)
 
 To run PAML on HalfCheetah with redundant extra dimensions for example:
 ```

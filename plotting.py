@@ -44,8 +44,8 @@ if __name__ == "__main__":
 	matplotlib.rc('font', **font)
 
 	f_act = plt.figure(figsize=(9,6))
-	#plt.xlim(0,500)
-	# plt.ylim(-1200,0)
+	plt.xlim(0,200)
+	plt.ylim(-750, 3250)
 
 	salient_states_dim = args.salient_states_dim
 	states_dim = args.states_dim
@@ -57,7 +57,9 @@ if __name__ == "__main__":
 	num_files = args.num_files
 	range_num_files = range(num_files)
 
-	if args.algo == 'ac' and env == 'HalfCheetah':
+	skip_5_mb = False
+	skip_5_all = False
+	if args.algo == 'ac' and env == 'HalfCheetah-v2':
 		skip_5_mb = True
 	elif args.algo == 'ac' and env == 'Pendulum-v0' or 'dm-Cartpole-balance':
 		skip_5_all = True
@@ -69,10 +71,15 @@ if __name__ == "__main__":
 	for mt in model_types:
 		file_lengths = np.zeros(num_files)
 		for index in range_num_files:
+			# if mt == 'paml':
+			# 	args.file_id = 'fid2'
+			# else:
+			# 	args.file_id = 'fid'
 			if mt == 'model_free':
+				horizon_ = 1 if args.algo == 'ac' else horizon
 				filename = \
 					'{}_state{}_salient{}_rewards_{}_checkpoint_use_model_False_{}_horizon{}_traj{}_{}_{}.npy' \
-						.format(mt, states_dim, salient_states_dim, algo, env, horizon, traj_length,
+						.format(mt, states_dim, salient_states_dim, algo, env, horizon_, traj_length,
 								args.file_id, index + 1)
 			else:
 				filename = \
@@ -82,13 +89,15 @@ if __name__ == "__main__":
 			file_lengths[index] = len(np.load(os.path.join(args.file_location, filename)))
 			if file_lengths[index] <= 1:
 				raise ValueError('File too small, wait for experiment to run longer if still running')
+		print(file_lengths)
 		num_eps = int(np.min(file_lengths))
 		models_all[mt] = np.zeros((num_files, num_eps))
 		for index in range_num_files:
 			if mt == 'model_free':
+				horizon_ = 1 if args.algo == 'ac' else horizon
 				filename = \
 					'{}_state{}_salient{}_rewards_{}_checkpoint_use_model_False_{}_horizon{}_traj{}_{}_{}.npy' \
-						.format(mt, states_dim, salient_states_dim, algo, env, horizon, traj_length,
+						.format(mt, states_dim, salient_states_dim, algo, env, horizon_, traj_length,
 								args.file_id, index + 1)
 			else:
 				filename = \
@@ -100,7 +109,11 @@ if __name__ == "__main__":
 		if args.algo == 'ac' and (skip_5_all or (skip_5_mb and mt in ['paml', 'mle'])):
 			plot_mean = np.mean(models_all[mt], axis=0).squeeze()[::5]
 			plot_max = (np.std(models_all[mt],axis=0).squeeze()/ np.sqrt(num_files))[::5]
-			plot_min = -plot_max[::5]
+			plot_min = -plot_max
+		elif args.algo == 'reinforce' and (mt in ['model_free']):
+			plot_mean = np.mean(models_all[mt], axis=0).squeeze()[::2]
+			plot_max = (np.std(models_all[mt],axis=0).squeeze()/ np.sqrt(num_files))[::2]
+			plot_min = -plot_max
 		else:
 			plot_mean = np.mean(models_all[mt], axis=0).squeeze()
 			plot_max = (np.std(models_all[mt],axis=0).squeeze()/ np.sqrt(num_files))
@@ -114,5 +127,9 @@ if __name__ == "__main__":
 	plt.title('{} irrelevant dims'.format(states_dim - salient_states_dim))
 	plt.xlabel('1000 timesteps')
 	plt.ylabel('Rewards from true dynamics')
-	plt.legend()
+	plt.legend(ncol=3)
 	plt.show()
+
+	f_act.savefig(f'images/graph_{algo}_{env}_state{states_dim}.pdf', bbox_inches='tight')
+	plt.close(f_act)
+

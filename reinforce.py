@@ -7,6 +7,7 @@ from networks import *
 from utils import *
 
 device = 'cpu'
+#TODO: make smaller amount of iterations for reinforce experiments
 
 def paml_train(P_hat,
 				pe,
@@ -375,7 +376,7 @@ def plan_and_train(P_hat, policy_estimator, model_opt, policy_optimizer, num_sta
 	total_eps = 10000.
 	global_step = 0
 	skip_next_training = False
-	policy_states_dim = salient_states_dim #if not extra_dims_stable else states_dim
+	policy_states_dim = salient_states_dim
 	while(global_step <= total_eps/num_starting_states):
 		if (global_step >= total_eps/num_starting_states - 5) or not skip_next_training:
 			with torch.no_grad():

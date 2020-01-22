@@ -140,10 +140,10 @@ def actor_critic_DDPG(env, actor, noise, critic, real_dataset, batch_size, num_s
 				# 					num_action_repeats, temp_data=True, discount=discount,
 				# 					all_rewards=[], use_pixels=False, reset=True, start_state=None, start_noise=None)
 				# 					#true_rewards)
-				# if timestep % 200 == 0:
-				# 	print(str(timestep) + ': pretraining crtitic ... ')
-				# 	critic.pre_train(actor, dataset, 5000, discount, batch_size, salient_states_dim, file_location,
-				# 											file_id, model_type, env_name, max_actions, verbose=100)
+				if timestep % 200 == 0:
+					print(str(timestep) + ': pretraining crtitic ... ')
+					critic.pre_train(actor, dataset, 5000, discount, batch_size, salient_states_dim, file_location,
+															file_id, model_type, env_name, max_actions, verbose=100)
 				# if timestep == (max_actions - 1):
 				# 	dataset.clear_temp()
 
@@ -428,6 +428,7 @@ def plan_and_train_ddpg(P_hat, actor, critic, model_opt, num_starting_states, nu
 	total_eps = 1000 #5000#10000
 	env_name = env.spec.id
 	true_rewards = []
+	epochs_value = 5000
 	fractions_real_data_schedule = np.linspace(1.0,0.5,num=50)
 
 	stablenoise = StableNoise(states_dim, salient_states_dim, 0.992)#, init=np.mean(env.reset()))
@@ -446,11 +447,11 @@ def plan_and_train_ddpg(P_hat, actor, critic, model_opt, num_starting_states, nu
 	elif env_name == 'Pendulum-v0':
 		env2 = gym.make('Pendulum-v0')
 		env2.spec.id = 'Pendulum-v0'
-	elif env_name == 'lin-dyn-v0':
-		# gym.envs.register(id='lin-dyn-v0', entry_point='gym_linear_dynamics.envs:LinDynEnv',)
-		# env = gym.make('gym_linear_dynamics:lin-dyn-v0')
-		env2 = gym.make('lin-dyn-v0')
-		env2.seed(rs)
+	# elif env_name == 'lin-dyn-v0':
+	# 	# gym.envs.register(id='lin-dyn-v0', entry_point='gym_linear_dynamics.envs:LinDynEnv',)
+	# 	# env = gym.make('gym_linear_dynamics:lin-dyn-v0')
+	# 	env2 = gym.make('lin-dyn-v0')
+	# 	env2.seed(rs)
 
 	# if model_type == 'paml':
 	# L_paml_val = []
@@ -540,8 +541,8 @@ def plan_and_train_ddpg(P_hat, actor, critic, model_opt, num_starting_states, nu
 		# 					num_action_repeats, temp_data=True, discount=discount, all_rewards=[],
 		# 				  	reset=True, start_state=None, start_noise=None)#true_rewards)
 		#
-		# critic.pre_train(actor, dataset, epochs_value, discount, batch_size, salient_states_dim, file_location,
-		# 				 file_id, model_type, env_name, max_actions, verbose=100)
+		critic.pre_train(actor, dataset, epochs_value, discount, batch_size, salient_states_dim, file_location,
+						 file_id, model_type, env_name, max_actions, verbose=100)
 		#
 		# if to_reset:
 		# 	dataset.clear_temp()
@@ -775,9 +776,10 @@ def main(
 		None
 	'''
 	if env_name == 'lin_dyn':
-		gym.envs.register(id='lin-dyn-v0', entry_point='gym_linear_dynamics.envs:LinDynEnv',)
-		# env = gym.make('gym_linear_dynamics:lin-dyn-v0')
-		env = gym.make('lin-dyn-v0')
+		# gym.envs.register(id='lin-dyn-v0', entry_point='gym_linear_dynamics.envs:LinDynEnv',)
+		# # env = gym.make('gym_linear_dynamics:lin-dyn-v0')
+		# env = gym.make('lin-dyn-v0')
+		raise NotImplementedError
 
 	elif env_name == 'Pendulum-v0':
 		# if states_dim > salient_states_dim:

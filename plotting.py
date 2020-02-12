@@ -130,6 +130,6 @@ if __name__ == "__main__":
 	plt.legend(ncol=3)
 	plt.show()
 
-	f_act.savefig(f'images/graph_{algo}_{env}_state{states_dim}.pdf', bbox_inches='tight')
+	f_act.savefig(f'images/graph_{algo}_{env}_state{states_dim}_hidden{hidden}_horizon{horizon}.pdf', bbox_inches='tight')
 	plt.close(f_act)
 

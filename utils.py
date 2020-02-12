@@ -113,16 +113,16 @@ class StableNoise(object):
 			return obs
 
 		if self.type=='redundant': #redundant extra dims
-			extra_obs1 = np.cos(obs)
-			extra_obs2 = np.sin(obs)
-			extra_obs3 = self.random_w @ obs
+			cos_extra_obs = np.cos(obs)
+			sin_extra_obs = np.sin(obs)
+			lin_extra_obs = self.random_w @ obs
 
 			if self.states_dim == 2 * self.salient_states_dim:
-				new_obs = np.hstack([obs, extra_obs1])
+				new_obs = np.hstack([obs, lin_extra_obs])
 			elif self.states_dim == 3 * self.salient_states_dim:
-				new_obs = np.hstack([obs, extra_obs1, extra_obs2])
+				new_obs = np.hstack([obs, cos_extra_obs, sin_extra_obs])
 			elif self.states_dim == 4 * self.salient_states_dim:
-				new_obs = np.hstack([obs, extra_obs1, extra_obs2, extra_obs3])
+				new_obs = np.hstack([obs, cos_extra_obs, sin_extra_obs, lin_extra_obs])
 			else:
 				raise ValueError('states_dim for redundant extra dimensions should be a multiple of salient_states_dim')
 		else: #random decaying extra dims
@@ -132,7 +132,7 @@ class StableNoise(object):
 		return new_obs
 
 
-def generate_data(env, env_val, states_dim, dataset, val_dataset, actor, train_starting_states, val_starting_states,
+def generate_data(env, states_dim, dataset, val_dataset, actor, train_starting_states, val_starting_states,
 				  max_actions, noise, num_action_repeats, temp_data=False, reset=True, start_state=None,
 				  start_noise=None, noise_type='random'):
 	'''This function generates the training and validation datasets from the true environments. Since we would like
@@ -223,9 +223,9 @@ def generate_data(env, env_val, states_dim, dataset, val_dataset, actor, train_s
 	# Collect validation dataset
 	if val_starting_states is not None:
 		for ep in range(val_starting_states):
-			state = env_val.reset()
+			state = env.reset()
 			# full_state = env.env.state_vector().copy()
-			if env_val.spec.id != 'lin-dyn-v0':
+			if env.spec.id != 'lin-dyn-v0':
 				state = stablenoise.get_obs(state, 0)
 			states = [state]
 			actions = []
@@ -235,8 +235,8 @@ def generate_data(env, env_val, states_dim, dataset, val_dataset, actor, train_s
 					action = actor.sample_action(torch.DoubleTensor(state)).detach().numpy()
 					# action = actor.sample_action(torch.DoubleTensor(state[:salient_states_dim])).detach().numpy()
 					action = noise.get_action(action, timestep+1, multiplier=1.0)
-				state_prime, reward, done, _ = env_val.step(action)
-				if env_val.spec.id != 'lin-dyn-v0':
+				state_prime, reward, done, _ = env.step(action)
+				if env.spec.id != 'lin-dyn-v0':
 					state_prime = stablenoise.get_obs(state_prime, timestep+1)
 				actions.append(action)
 				states.append(state_prime)

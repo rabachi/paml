@@ -477,7 +477,7 @@ def plan_and_train_ddpg(P_hat, actor, critic, model_opt, num_starting_states, nu
 			to_reset = (max_actions <= 250) or (global_step % (max_actions/250) == 0)
 
 		#possible memory issue: passing dataset and validation_dataset back and forth
-		start_state, start_noise = generate_data(env2, env, states_dim, dataset, validation_dataset,
+		start_state, start_noise = generate_data(env2, states_dim, dataset, validation_dataset,
 															  actor, num_starting_states, num_val_starts,
 															  num_steps, noise, num_action_repeats,
 															  reset=to_reset,

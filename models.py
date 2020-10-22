@@ -31,9 +31,12 @@ class DirectEnvModel(torch.nn.Module):
 		elif self.model_size == 'nn':
 			self.fc1 = nn.Linear(states_dim + N_ACTIONS, hidden_size) #128 limited, 512 good for halfcheetah
 			self.fc2 = nn.Linear(hidden_size, hidden_size)
+			self.fc3 = nn.Linear(hidden_size, hidden_size)
+
 			self._enc_mu = torch.nn.Linear(hidden_size, states_dim)
 			torch.nn.init.xavier_uniform_(self.fc1.weight)
 			torch.nn.init.xavier_uniform_(self.fc2.weight)
+			torch.nn.init.xavier_uniform_(self.fc3.weight)
 			torch.nn.init.xavier_uniform_(self._enc_mu.weight)
 		else:
 			raise NotImplementedError
@@ -53,10 +56,11 @@ class DirectEnvModel(torch.nn.Module):
 			x = nn.ReLU()(self.fc1(x))
 			# x = self.fc2(x)
 			x = nn.ReLU()(self.fc2(x))
+			x = nn.ReLU()(self.fc3(x))
 			# x = self.fc3(x)
 			# x = nn.ReLU()(x)
 			if self.limit_output:
-				mu = nn.Tanh()(self._enc_mu(x)) * 8.0 #100.0 #*3.0
+				mu = nn.Tanh()(self._enc_mu(x)) * 100.0#* 8.0 #100.0 #*3.0
 			else:
 				mu = self._enc_mu(x) #nn.Tanh()(self._enc_mu(x)) * 5.0 #100.0 #*3.0
 		else:
@@ -301,16 +305,36 @@ class DirectEnvModel(torch.nn.Module):
 				true_pe_grads = torch.cat((true_pe_grads,true_pe_grads_attached[g].detach().view(-1)))
 
 			step_state = torch.cat((true_states_prev, true_actions_tensor),dim=1).unsqueeze(1)
+			learning_horizon = 1
+			s = 0
+			model_x_curr = torch.zeros((batch_size * learning_horizon, states_dim)).double()
+			model_x_next = torch.zeros((batch_size * learning_horizon, states_dim)).double()
+			model_a_list = torch.zeros((batch_size * learning_horizon, self.n_actions)).double()
 			if use_model:
-				model_x_curr, model_x_next, model_a_list, _, _ = self.unroll(step_state, actor, states_dim, None,
-																			 steps_to_unroll=1,
-																			 continuous_actionspace=True,
-																			 use_model=True,
-																			 salient_states_dim=states_dim,
-																			 noise=noise, env=env)
+				# for s in range(learning_horizon):
+				x_curr, x_next, a_list, _, a_next_list = self.unroll(
+																step_state, 
+																actor, 
+																states_dim, 
+																None,
+																steps_to_unroll=1,
+																continuous_actionspace=True,
+																use_model=True,
+																salient_states_dim=states_dim,
+																noise=noise, 
+																env=env, 
+																using_delta=True
+																)
 				#salient_states_dim, noise=noise, env=env)
-				model_x_curr = model_x_curr.squeeze(1).squeeze(1)
-				model_x_next = model_x_next.squeeze(1).squeeze(1)
+				x_curr = x_curr.squeeze()
+				x_next = x_next.squeeze()
+				a_list = a_list.squeeze()
+				a_next_list = a_next_list.squeeze()
+
+				# step_state = torch.cat((x_next, a_next_list), dim=1).unsqueeze(1)
+				model_x_curr[batch_size * s: batch_size * (s+1)] = x_curr[:]
+				model_x_next[batch_size * s: batch_size * (s+1)] = x_next[:]
+				model_a_list[batch_size * s: batch_size * (s+1)] = a_list[:]
 			else:
 				model_batch = dataset.sample(batch_size)
 				model_x_curr = torch.tensor([samp.state for samp in model_batch]).double().to(device)
@@ -363,9 +387,7 @@ class DirectEnvModel(torch.nn.Module):
 		# 	salient_states_dim, train, env_name, R_range, max_actions + 1, file_id)), map_location=device))
 		if save_checkpoints:
 			torch.save(self.state_dict(), os.path.join(file_location,
-										'model_paml_checkpoint_state{}_salient{}_actorcritic_{}_horizon{}_traj{}_{}.pth'
-												   .format(states_dim, salient_states_dim, env_name, planning_horizon,
-														   max_actions+1, file_id)))
+						f'model_paml_checkpoint_state{states_dim}_salient{salient_states_dim}_actorcritic_{env_name}_hidden{self.hidden_size}_horizon{planning_horizon}_traj{max_actions+1}_{file_id}.pth'))
 
 		return loss.data.cpu()
 
@@ -454,10 +476,9 @@ class DirectEnvModel(torch.nn.Module):
 			final mode loss at end of training
 		'''
 		best_loss = 1000
-		# self.mean_states, self.std_states, self.mean_deltas, self.std_deltas, self.mean_actions, self.std_actions =
-		# compute_normalization(dataset)
-		# val_mean_states, val_std_states, val_mean_deltas, val_std_deltas, val_mean_actions, val_std_actions =
-		# compute_normalization(validation_dataset)
+		self.mean_states, self.std_states, self.mean_deltas, self.std_deltas, self.mean_actions, self.std_actions = compute_normalization(dataset)
+		val_mean_states, val_std_states, val_mean_deltas, val_std_deltas, val_mean_actions, val_std_actions = compute_normalization(validation_dataset)
+
 		val_model_losses = [np.inf]
 		for i in range(epochs):
 			#sample from dataset 
@@ -466,18 +487,21 @@ class DirectEnvModel(torch.nn.Module):
 			states_next = torch.tensor([samp.next_state for samp in batch]).double().to(device)
 			actions_tensor = torch.tensor([samp.action for samp in batch]).double().to(device)
 
+
 			# normalize states and actions
-			states_norm = states_prev #(states_prev - self.mean_states) / (self.std_states + 1e-7)
-			acts_norm = actions_tensor #(actions_tensor - self.mean_actions) / (self.std_actions + 1e-7)
+			states_norm = (states_prev - self.mean_states) / (self.std_states + 1e-7)
+			acts_norm = (actions_tensor - self.mean_actions) / (self.std_actions + 1e-7)
 			# normalize the state differences
-			# deltas_states_norm = ((states_next - states_prev) - self.mean_deltas) / (self.std_deltas + 1e-7)
+			deltas_states_norm = ((states_next - states_prev) - self.mean_deltas) / (self.std_deltas + 1e-7)
+			#print(torch.min(deltas_states_norm), torch.max(deltas_states_norm))
+
 			step_state = torch.cat((states_norm, acts_norm), dim = 1).to(device)
 
 			# step_state = torch.cat((states_prev, actions_tensor), dim=1).to(device)
 			model_next_state_delta = self.forward(step_state)
 
 			# squared_errors = ((states_next - states_prev) - model_next_state_delta)**2
-			deltas_states_norm = states_next - states_prev
+			# deltas_states_norm = (states_next - states_prev) 
 			squared_errors = (deltas_states_norm - model_next_state_delta)**2
 
 			#step_state = torch.cat((next_step_state,a),dim=1)
@@ -485,9 +509,7 @@ class DirectEnvModel(torch.nn.Module):
 
 			if model_loss.detach().data.cpu() < best_loss and save_checkpoints:
 				torch.save(self.state_dict(), os.path.join(file_location,
-										'model_mle_checkpoint_state{}_salient{}_actorcritic_{}_horizon{}_traj{}_{}.pth'
-														   .format(states_dim, salient_states_dim, env_name, 1,
-																   max_actions + 1, file_id)))
+								f'model_mle_checkpoint_state{states_dim}_salient{salient_states_dim}_actorcritic_{env_name}_hidden{self.hidden_size}_horizon{1}_traj{max_actions + 1}_{file_id}.pth'))
 				best_loss = model_loss.detach().data.cpu()
 
 			if (i % verbose == 0) or (i == epochs - 1):
@@ -498,11 +520,10 @@ class DirectEnvModel(torch.nn.Module):
 				val_actions_tensor = torch.tensor([samp.action for samp in val_batch]).double().to(device)
 
 				# normalize states and actions
-				val_states_norm = val_states_prev#(val_states_prev - val_mean_states) / (val_std_states + 1e-7)
-				val_acts_norm = val_actions_tensor#(val_actions_tensor - val_mean_actions) / (val_std_actions + 1e-7)
+				val_states_norm = (val_states_prev - val_mean_states) / (val_std_states + 1e-7)
+				val_acts_norm = (val_actions_tensor - val_mean_actions) / (val_std_actions + 1e-7)
 				# normalize the state differences
-				val_deltas_states_norm = val_states_next - val_states_prev#((val_states_next - val_states_prev) -
-																			# val_mean_deltas) / (val_std_deltas + 1e-7)
+				val_deltas_states_norm = ((val_states_next - val_states_prev) - val_mean_deltas) / (val_std_deltas + 1e-7)
 				val_step_state = torch.cat((val_states_norm, val_acts_norm), dim = 1).to(device)
 
 				with torch.no_grad():
@@ -511,7 +532,7 @@ class DirectEnvModel(torch.nn.Module):
 				val_squared_errors = (val_deltas_states_norm - val_model_next_state_delta)**2
 				val_model_losses.append(torch.mean(torch.sum(val_squared_errors,dim=1)).data)
 
-				if len(val_model_losses) >= 25 and val_model_losses[-1] >= (val_model_losses[1] + val_model_losses[1]*0.05):
+				if len(val_model_losses) >= 25 and (val_model_losses[-1] > (val_model_losses[-2])):
 					return model_loss	
 				elif len(val_model_losses) >= 25:
 					val_model_losses = val_model_losses[1:]
@@ -542,11 +563,14 @@ class DirectEnvModel(torch.nn.Module):
 			Tensor of next states as predicted by model in self
 		'''
 		# normalize the states and actions
-		states_norm = states#(states - self.mean_states) / (self.std_states + 1e-7)
-		act_norm = actions#(actions - self.mean_actions) / (self.std_actions + 1e-7)
+		states_norm = (states - self.mean_states) / (self.std_states + 1e-7)
+		act_norm = (actions - self.mean_actions) / (self.std_actions + 1e-7)
 		# concatenate normalized states and actions
 		states_act_norm = torch.cat((states_norm, act_norm), dim=1)
 		# predict the deltas between states and next states
 		deltas = self.forward(states_act_norm)
+		# print(torch.min(states - (deltas * self.std_deltas + self.mean_deltas + states)), torch.max(states - (deltas * self.std_deltas + self.mean_deltas + states)))
+
 		# calculate the next states using the predicted delta values and denormalize
-		return deltas + states_norm #deltas * self.std_deltas + self.mean_deltas + states
+		return deltas * self.std_deltas + self.mean_deltas + states #deltas + states_norm #
+

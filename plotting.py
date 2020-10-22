@@ -13,7 +13,7 @@ if __name__ == "__main__":
 	parser.add_argument('--file_id', type=str, default='0',
 						help='optional additional information to include and for saving multiple runs separately')
 	parser.add_argument('--algo', type=str, help='ac or reinforce')
-	parser.add_argument('--env', type=str, help='lin_dyn, Pendulum-v0, HalfCheetah-v2, dm-Cartpole-balance-v0')
+	parser.add_argument('--env', type=str, help='lin_dyn, Pendulum-v0, HalfCheetah-v2, Ant-v2, Walker2d-v2, Hopper-v2, dm-Cartpole-balance-v0')
 	parser.add_argument('--model_types', type=str, default='paml',
 						help='the model types to plot at once, e.g "paml, mle, model_free" will plot paml performance '
 							 'and mle and model-free')
@@ -32,9 +32,9 @@ if __name__ == "__main__":
 	#Check that inputs are correct
 	model_types = args.model_types.split(',')
 	for mt in model_types:
-		if mt not in ['mle', 'paml', 'model_free']:
+		if mt not in ['mle', 'paml', 'model_free','random']:
 			raise ValueError('one or more of the model types are not valid entries. '
-							 'Only allowed ones are "mle", "paml", "model_free" '
+							 'Only allowed ones are "mle", "paml", "model_free", "random" '
 							 'or combinations thereof separated by ","')
 	if args.algo not in ['ac', 'reinforce']:
 		raise ValueError('Algo must be one of "ac" or "reinforce"')
@@ -45,7 +45,7 @@ if __name__ == "__main__":
 
 	f_act = plt.figure(figsize=(9,6))
 	plt.xlim(0,200)
-	plt.ylim(-750, 3250)
+	# plt.ylim(-750, 3250)
 
 	salient_states_dim = args.salient_states_dim
 	states_dim = args.states_dim
@@ -59,14 +59,15 @@ if __name__ == "__main__":
 
 	skip_5_mb = False
 	skip_5_all = False
-	if args.algo == 'ac' and env == 'HalfCheetah-v2':
+	if (args.algo == 'ac') and (env != 'Pendulum-v0') and (env != 'dm-Cartpole-balance') and (env != 'MBRLHopper-v0'):
 		skip_5_mb = True
-	elif args.algo == 'ac' and env == 'Pendulum-v0' or 'dm-Cartpole-balance':
-		skip_5_all = True
+	elif (args.algo == 'ac') and ((env == 'Pendulum-v0') or (env == 'dm-Cartpole-balance') or (env == 'MBRLHopper-v0')):
+		skip_5_all = False
 
-	colors = {'mle': 'C1', 'paml': 'C2', 'model_free': 'C0'}
+	colors = {'mle': 'C1', 'paml': 'C2', 'model_free': 'C0', 'random': 'C3'}
 	models_all = {}
 
+	file_id = args.file_id
 	algo = args.algo if args.algo == 'reinforce' else 'actorcritic'
 	for mt in model_types:
 		file_lengths = np.zeros(num_files)
@@ -78,14 +79,11 @@ if __name__ == "__main__":
 			if mt == 'model_free':
 				horizon_ = 1 if args.algo == 'ac' else horizon
 				filename = \
-					'{}_state{}_salient{}_rewards_{}_checkpoint_use_model_False_{}_horizon{}_traj{}_{}_{}.npy' \
+					'{}_state{}_salient{}_rewards_{}_checkpoint_use_model_False_{}_horizon{}_traj{}_{}.npy' \
 						.format(mt, states_dim, salient_states_dim, algo, env, horizon_, traj_length,
-								args.file_id, index + 1)
+								 index + 1)
 			else:
-				filename = \
-				'{}_state{}_salient{}_rewards_{}_checkpoint_use_model_False_{}_horizon{}_traj{}_{}Model_hidden{}_{}_{}.npy'\
-						.format(mt, states_dim, salient_states_dim, algo, env, horizon, traj_length, model_size,
-								hidden, args.file_id, index + 1)
+				filename = f'{mt}_state{states_dim}_salient{salient_states_dim}_rewards_{algo}_checkpoint_use_model_False_{env}_horizon{horizon}_traj{traj_length}_{model_size}Model_hidden{hidden}_{index + 1}.npy'
 			file_lengths[index] = len(np.load(os.path.join(args.file_location, filename)))
 			if file_lengths[index] <= 1:
 				raise ValueError('File too small, wait for experiment to run longer if still running')
@@ -96,23 +94,24 @@ if __name__ == "__main__":
 			if mt == 'model_free':
 				horizon_ = 1 if args.algo == 'ac' else horizon
 				filename = \
-					'{}_state{}_salient{}_rewards_{}_checkpoint_use_model_False_{}_horizon{}_traj{}_{}_{}.npy' \
+					'{}_state{}_salient{}_rewards_{}_checkpoint_use_model_False_{}_horizon{}_traj{}_{}.npy' \
 						.format(mt, states_dim, salient_states_dim, algo, env, horizon_, traj_length,
-								args.file_id, index + 1)
+								index + 1)
 			else:
-				filename = \
-					'{}_state{}_salient{}_rewards_{}_checkpoint_use_model_False_{}_horizon{}_traj{}_{}Model_hidden{}_{}_{}.npy' \
-						.format(mt, states_dim, salient_states_dim, algo, env, horizon, traj_length, model_size,
-								hidden, args.file_id, index + 1)
+				filename = f'{mt}_state{states_dim}_salient{salient_states_dim}_rewards_{algo}_checkpoint_use_model_False_{env}_horizon{horizon}_traj{traj_length}_{model_size}Model_hidden{hidden}_{index + 1}.npy' 
 			models_all[mt][index, :] = np.load(os.path.join(args.file_location, filename))[:num_eps]
 
 		if args.algo == 'ac' and (skip_5_all or (skip_5_mb and mt in ['paml', 'mle'])):
+			plot_mean = np.mean(models_all[mt], axis=0).squeeze()[10:][::5]
+			plot_max = (np.std(models_all[mt],axis=0).squeeze()/ np.sqrt(num_files))[10:][::5]
+			plot_min = -plot_max
+		elif args.algo == 'reinforce' and (mt in ['model_free']):
 			plot_mean = np.mean(models_all[mt], axis=0).squeeze()[::5]
 			plot_max = (np.std(models_all[mt],axis=0).squeeze()/ np.sqrt(num_files))[::5]
 			plot_min = -plot_max
-		elif args.algo == 'reinforce' and (mt in ['model_free']):
-			plot_mean = np.mean(models_all[mt], axis=0).squeeze()[::2]
-			plot_max = (np.std(models_all[mt],axis=0).squeeze()/ np.sqrt(num_files))[::2]
+		elif args.algo == 'ac' and (mt in ['paml', 'mle']) and (env == 'MBRLHopper-v0'):
+			plot_mean = np.mean(models_all[mt], axis=0).squeeze()[10:]
+			plot_max = (np.std(models_all[mt],axis=0).squeeze()/ np.sqrt(num_files))[10:]
 			plot_min = -plot_max
 		else:
 			plot_mean = np.mean(models_all[mt], axis=0).squeeze()
@@ -124,10 +123,15 @@ if __name__ == "__main__":
 						plot_min + plot_mean, plot_max + plot_mean,
 						alpha=0.5, color=colors[mt])
 
-	plt.title('{} irrelevant dims'.format(states_dim - salient_states_dim))
-	plt.xlabel('1000 timesteps')
+	env_name = args.env.split('-')[0]
+	if 'MBRL' in env_name:
+		env_name = env_name[4:]
+	# plt.title('{} irrelevant dims'.format(states_dim - salient_states_dim))
+	plt.title(f'{env_name}')
+	plt.xlabel('1000 Timesteps')
 	plt.ylabel('Rewards from true dynamics')
 	plt.legend(ncol=3)
+	plt.grid(True)
 	plt.show()
 
 	f_act.savefig(f'images/graph_{algo}_{env}_state{states_dim}_hidden{hidden}_horizon{horizon}.pdf', bbox_inches='tight')

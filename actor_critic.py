@@ -7,6 +7,7 @@ import pdb
 from models import *
 from networks import *
 from utils import *
+import envs
 
 import dm_control2gym
 
@@ -140,10 +141,14 @@ def actor_critic_DDPG(env, actor, noise, critic, real_dataset, batch_size, num_s
 				# 					num_action_repeats, temp_data=True, discount=discount,
 				# 					all_rewards=[], use_pixels=False, reset=True, start_state=None, start_noise=None)
 				# 					#true_rewards)
-				if timestep % 200 == 0:
-					print(str(timestep) + ': pretraining crtitic ... ')
-					critic.pre_train(actor, dataset, 5000, discount, batch_size, salient_states_dim, file_location,
-															file_id, model_type, env_name, max_actions, verbose=100)
+				
+
+				# if timestep % 200 == 0:
+				# 	print(str(timestep) + ': pretraining crtitic ... ')
+				# 	critic.pre_train(actor, dataset, 5000, discount, batch_size, salient_states_dim, file_location,
+				# 											file_id, model_type, env_name, max_actions, verbose=100)
+				
+
 				# if timestep == (max_actions - 1):
 				# 	dataset.clear_temp()
 
@@ -257,8 +262,7 @@ def actor_critic_DDPG(env, actor, noise, critic, real_dataset, batch_size, num_s
 				# have to move the states to a random position within a radius, here it's 1
 				random_pos_delta = 2*(np.random.random(
 					size = (replay_start_random_model_batch_size, states_dim)) - 0.5) * radius
-				replay_model_x_curr = torch.tensor([replay_model_batch[idx].state * (1 + random_pos_delta[idx])
-													for idx in range(replay_start_random_model_batch_size)]).double()
+				replay_model_x_curr = torch.tensor([replay_model_batch[idx].state * (1 + random_pos_delta[idx]) for idx in range(replay_start_random_model_batch_size)]).double()
 			if true_batch_size > 0:
 				states_prev = torch.cat((true_x_curr, random_model_x_curr, replay_model_x_curr), 0)
 			else:
@@ -322,27 +326,47 @@ def actor_critic_DDPG(env, actor, noise, critic, real_dataset, batch_size, num_s
 				all_rewards.append(sum(eval_rewards)/10.)
 
 				torch.save(actor.state_dict(), os.path.join(
-					file_location,'act_policy_{}_state{}_salient{}_checkpoint_{}_horizon{}_traj{}_{}.pth'.format(
-						model_type, states_dim, salient_states_dim, env_name, R_range, max_actions + 1, file_id)))
+					file_location, f'act_policy_{model_type}_state{states_dim}_salient{salient_states_dim}_checkpoint_{env_name}_horizon{R_range}_traj{max_actions + 1}_{file_id}.pth'))
 				torch.save(critic.state_dict(), os.path.join(
-					file_location,'critic_policy_{}_state{}_salient{}_checkpoint_{}_horizon{}_traj{}_{}.pth'.format(
-						model_type, states_dim, salient_states_dim, env_name, R_range, max_actions + 1, file_id)))
+					file_location,f'critic_policy_{model_type}_state{states_dim}_salient{salient_states_dim}_checkpoint_{env_name}_horizon{R_range}_traj{max_actions + 1}_{file_id}.pth'))
 
 				print("Ep: {:5d} | Q_Loss: {:.3f} | Pi_Loss: {:.3f} | Average rewards of 10 independent episodes:{:.4f}"
 					  .format(ep, critic_loss.detach(), policy_loss.detach(), all_rewards[-1]))
 				#save all_rewards
 				np.save(os.path.join(
-					file_location,
-					'{}_state{}_salient{}_rewards_actorcritic_checkpoint_use_model_{}_{}_horizon{}_traj{}_{}'.format(
-						model_type, states_dim, salient_states_dim, use_model, env_name, R_range, max_actions + 1,
-						file_id)), np.asarray(all_rewards))
+					file_location, f'{model_type}_state{states_dim}_salient{salient_states_dim}_rewards_actorcritic_checkpoint_use_model_{use_model}_{env_name}_horizon{R_range}_traj{max_actions + 1}_{file_id}'), np.asarray(all_rewards))
 	return actor, critic
 
 
-def plan_and_train_ddpg(P_hat, actor, critic, model_opt, num_starting_states, num_episodes, states_dim,
-						salient_states_dim, actions_dim, discount, max_actions, env, lr, num_iters, file_location,
-						file_id, save_checkpoints_training, verbose, batch_size, num_virtual_episodes, model_type,
-						num_action_repeats, planning_horizon, input_rho, trained_Phat_mle, rs, noise_type):
+def plan_and_train_ddpg(
+					P_hat, 
+					actor, 
+					critic, 
+					model_opt, 
+					num_starting_states, 
+					num_episodes, 
+					states_dim,	
+					salient_states_dim, 
+					actions_dim, 
+					discount, 
+					max_actions, 
+					env, 
+					lr, 
+					num_iters, 
+					file_location,
+					file_id, 
+					save_checkpoints_training, 
+					verbose, 
+					batch_size, 
+					num_virtual_episodes, 
+					model_type,	
+					num_action_repeats, 
+					planning_horizon, 
+					input_rho, 
+					trained_Phat_mle, 
+					rs, 
+					noise_type
+		):
 	'''Implements the Dyna loop in a sequential manner. The loops repeats the following steps for
 		total_eps number of steps:
 		1. Collect state transitions from env (trajectories of maximum 200 steps are collected here. For environments
@@ -387,6 +411,8 @@ def plan_and_train_ddpg(P_hat, actor, critic, model_opt, num_starting_states, nu
 	Returns:
 		None
 	'''
+	mfmb_threshold = 10
+	num_virtual_episodes_store = num_virtual_episodes
 	R_range = planning_horizon
 	losses = []
 	norms_model_pe_grads = []
@@ -418,7 +444,7 @@ def plan_and_train_ddpg(P_hat, actor, critic, model_opt, num_starting_states, nu
 	lr_schedule = []
 	for m_o in model_opt:
 		if model_type == 'paml':
-			lr_schedule.append(torch.optim.lr_scheduler.MultiStepLR(m_o, milestones=[10,500,1000], gamma=0.1))
+			lr_schedule.append(torch.optim.lr_scheduler.MultiStepLR(m_o, milestones=[1000,500000,20000000], gamma=0.1))
 		elif model_type == 'mle':
 			lr_schedule.append(torch.optim.lr_scheduler.MultiStepLR(m_o, milestones=[10,1000,20000000], gamma=0.1)) #ADJUST AS NEEDED
 
@@ -435,18 +461,21 @@ def plan_and_train_ddpg(P_hat, actor, critic, model_opt, num_starting_states, nu
 	original_batch_size = batch_size
 	start_state, start_noise = None, None
 
-	if env_name == 'dm-Walker-v0':
-		env2 = dm_control2gym.make(domain_name="walker", task_name="walk")
-		env2.spec.id = 'dm-Walker-v0'
-	elif env_name == 'HalfCheetah-v2':
-		env2 = gym.make('HalfCheetah-v2')
-		env2.spec.id = 'HalfCheetah-v2'
-	elif env_name == 'dm-Cartpole-balance-v0':
-		env2 = dm_control2gym.make(domain_name="cartpole", task_name="balance")
-		env2.spec.id = 'dm-Cartpole-balance-v0'
-	elif env_name == 'Pendulum-v0':
-		env2 = gym.make('Pendulum-v0')
-		env2.spec.id = 'Pendulum-v0'
+	# if env_name == 'dm-Walker-v0':
+	# 	env2 = dm_control2gym.make(domain_name="walker", task_name="walk")
+	# 	env2.spec.id = 'dm-Walker-v0'
+	# elif env_name == 'HalfCheetah-v2':
+	# 	env2 = gym.make('HalfCheetah-v2')
+	# 	env2.spec.id = 'HalfCheetah-v2'
+	# elif env_name == 'dm-Cartpole-balance-v0':
+	# 	env2 = dm_control2gym.make(domain_name="cartpole", task_name="balance")
+	# 	env2.spec.id = 'dm-Cartpole-balance-v0'
+	# elif env_name == 'Pendulum-v0':
+	# 	env2 = gym.make('Pendulum-v0')
+	# 	env2.spec.id = 'Pendulum-v0'
+
+
+
 	# elif env_name == 'lin-dyn-v0':
 	# 	# gym.envs.register(id='lin-dyn-v0', entry_point='gym_linear_dynamics.envs:LinDynEnv',)
 	# 	# env = gym.make('gym_linear_dynamics:lin-dyn-v0')
@@ -463,28 +492,39 @@ def plan_and_train_ddpg(P_hat, actor, critic, model_opt, num_starting_states, nu
 	# mle_L_mle_val_relevant = []
 	# paml_L_mle_val_irrelevant = []
 	# mle_L_mle_val_irrelevant = []
-	num_val_starts = 2
+	num_val_starts = 5
 	validation_dataset = ReplayMemory(num_val_starts*max_actions)
 	while(global_step <= total_eps):
 		# Generating sample trajectories 
 		print("Global step: {:4d} | Generating sample trajectories ...".format(global_step))
 
 		num_steps = min(200,max_actions)
-		to_reset = (max_actions <= 200) or (global_step % (max_actions/200) == 0)
+		to_reset = (global_step % 5 == 0) #(max_actions <= 200) or (global_step % (max_actions/200) == 0)
 
 		if env_name == 'dm-Walker-v0':
 			num_steps = min(250, max_actions)
 			to_reset = (max_actions <= 250) or (global_step % (max_actions/250) == 0)
 
 		#possible memory issue: passing dataset and validation_dataset back and forth
-		start_state, start_noise = generate_data(env2, states_dim, dataset, validation_dataset,
-															  actor, num_starting_states, num_val_starts,
-															  num_steps, noise, num_action_repeats,
-															  reset=to_reset,
-															  start_state=None if to_reset else start_state,
-															  start_noise=None if to_reset else start_noise,
-												 			  noise_type=noise_type)
+		# used to be env2
+		start_state, start_noise = generate_data(
+												env, 
+												states_dim, 
+												dataset, 
+												validation_dataset,
+								     			actor, 
+								     			num_starting_states, 
+								     			num_val_starts,
+								     			num_steps, 
+								     			noise, 
+								     			num_action_repeats,
+												reset=to_reset,
+												start_state=None if to_reset else start_state,
+												start_noise=None if to_reset else start_noise,
+												noise_type=noise_type
+												)
 		batch_size = min(original_batch_size, len(dataset))
+		print(f'length of dataset:{len(dataset)}')
 		#Evaluate policy without noise
 		eval_rewards = []
 		# Commented code for estimate_returns and returns are for comparing performance of critic in comparison
@@ -528,11 +568,9 @@ def plan_and_train_ddpg(P_hat, actor, critic, model_opt, num_starting_states, nu
 		# '{}_state{}_salient{}_estimate_returns_actorcritic_checkpoint_use_model_False_{}_horizon{}_traj{}_{}_{}'
 		# .format(model_type, states_dim, salient_states_dim, env_name, R_range, max_actions + 1,
 		# global_step, file_id)), np.asarray(estimate_returns[:,0]))
-		np.save(os.path.join(
-			file_location,'{}_state{}_salient{}_rewards_actorcritic_checkpoint_use_model_False_{}_horizon{}_traj{}_{}Model_hidden{}_{}.npy'
-				.format(model_type, states_dim, salient_states_dim, env_name, R_range, max_actions + 1,
-						P_hat[0].model_size, P_hat[0].hidden_size, file_id)),
-			np.asarray(true_rewards))
+		np.save(os.path.join(file_location,
+							f'{model_type}_state{states_dim}_salient{salient_states_dim}_rewards_actorcritic_checkpoint_use_model_False_{env_name}_horizon{R_range}_traj{max_actions + 1}_{P_hat[0].model_size}Model_hidden{P_hat[0].hidden_size}_{file_id}.npy'), 
+							np.asarray(true_rewards))
 
 		# uncomment below for critic-10 baselines
 		# if to_reset and env != 'lin-dyn-v0':# and model_type == 'paml':
@@ -541,8 +579,13 @@ def plan_and_train_ddpg(P_hat, actor, critic, model_opt, num_starting_states, nu
 		# 					num_action_repeats, temp_data=True, discount=discount, all_rewards=[],
 		# 				  	reset=True, start_state=None, start_noise=None)#true_rewards)
 		#
-		critic.pre_train(actor, dataset, epochs_value, discount, batch_size, salient_states_dim, file_location,
-						 file_id, model_type, env_name, max_actions, verbose=100)
+		
+
+		# critic.pre_train(actor, dataset, epochs_value, discount, batch_size, salient_states_dim, file_location,
+		# 				 file_id, model_type, env_name, max_actions, verbose=100)
+		
+
+
 		#
 		# if to_reset:
 		# 	dataset.clear_temp()
@@ -560,111 +603,165 @@ def plan_and_train_ddpg(P_hat, actor, critic, model_opt, num_starting_states, nu
 		kwargs['train'] = True
 		kwargs['num_iters'] = verbose
 		kwargs['use_model'] = True
+		if (global_step >= mfmb_threshold):
+			if to_reset: # or env_name == 'dm-Walker-v0':
+				for P_hat_idx in range(len(P_hat)):
+					kwargs['losses'] = None #losses not being recorded, may want to change this at some point
+					if model_type != 'random':
+						kwargs['opt'] = model_opt[P_hat_idx]
+					if model_type =='mle':
+						print(P_hat_idx)
+						P_hat[P_hat_idx].general_train_mle(
+															actor, 
+															dataset, 
+															validation_dataset, 
+															states_dim,
+															salient_states_dim, 
+															num_iters, 
+															max_actions, 
+															model_opt[P_hat_idx],
+															env_name, 
+															losses, 
+															batch_size, 
+															file_location, 
+															file_id,
+															save_checkpoints=True, 
+															verbose=verbose,
+															lr_schedule=lr_schedule[P_hat_idx], 
+															global_step=global_step
+														)
 
-		if to_reset or env_name == 'dm-Walker-v0':
-			for P_hat_idx in range(len(P_hat)):
-				kwargs['losses'] = None #losses not being recorded, may want to change this at some point
-				if model_type != 'random':
-					kwargs['opt'] = model_opt[P_hat_idx]
-				if model_type =='mle':
-					P_hat[P_hat_idx].general_train_mle(actor, dataset, validation_dataset, states_dim,
-													   salient_states_dim, num_iters, max_actions, model_opt[P_hat_idx],
-													   env_name, losses, batch_size, file_location, file_id,
-													   save_checkpoints=True, verbose=verbose,
-													   lr_schedule=lr_schedule[P_hat_idx], global_step=global_step)
-				elif model_type == 'paml':
-					val_losses = [100,99]
-					while val_losses[-1] < (val_losses[-2] + val_losses[-2] * 0.0):
-						#train PAML model
-						kwargs['train'] = True
-						kwargs['dataset'] = dataset
-						kwargs['num_iters'] = num_iters#verbose
-						kwargs['batch_size'] = batch_size
+					elif model_type == 'paml':
+						val_losses = [100,99]
+						while (len(val_losses) < 6) or decreasing(val_losses, 0.99):
+							print(len(val_losses))
+							print(val_losses)
+							#train PAML model
+							kwargs['train'] = True
+							kwargs['dataset'] = dataset
+							kwargs['num_iters'] = num_iters#verbose
+							kwargs['batch_size'] = batch_size
+							kwargs['lr_schedule'] = lr_schedule[P_hat_idx]
+							P_hat[P_hat_idx].actor_critic_paml_train(**kwargs)
+
+							#check validation loss
+							kwargs['dataset'] = validation_dataset
+							kwargs['train'] = False
+							kwargs['num_iters'] = 1
+							kwargs['batch_size'] = len(validation_dataset)
+							val_losses.append(P_hat[P_hat_idx].actor_critic_paml_train(**kwargs))
+							if len(val_losses) >= 25:
+								val_losses = val_losses[1:]
+								if not decreasing(val_losses[-5:], 1.0):
+									break
+
+						# del val_losses
+					elif model_type == 'random':
+						pass
+					else:
+						raise NotImplementedError
+					
+					if model_type != 'random':
 						kwargs['lr_schedule'] = lr_schedule[P_hat_idx]
-						P_hat[P_hat_idx].actor_critic_paml_train(**kwargs)
 
-						#check validation loss
-						kwargs['dataset'] = validation_dataset
-						kwargs['train'] = False
-						kwargs['num_iters'] = 1
-						kwargs['batch_size'] = len(validation_dataset)
-						val_losses.append(P_hat[P_hat_idx].actor_critic_paml_train(**kwargs))
-						val_losses = val_losses[1:]
-					del val_losses
-				elif model_type == 'random':
-					pass
-				else:
-					raise NotImplementedError
-		use_model = True
-		train = True
+			use_model = True
+			train = True
 
-		# For testing: Uncomment to see effect of virtual episodes on model loss to see how PAML is affected
-		# for v_ep in range(num_virtual_episodes):
-		# 	actor, critic = actor_critic_DDPG(env, actor, noise, critic, dataset, batch_size, 1, max_actions,
-		# 									  states_dim, salient_states_dim, discount, use_model, verbose,
-		# 									  file_location, file_id, num_action_repeats,
-		# 									  planning_horizon=planning_horizon, P_hat=P_hat, model_type=model_type)
-		# 	#check paml_loss with the new policy
-		# 	kwargs['train'] = False
-		# 	kwargs['use_model'] = True
-		# 	kwargs['losses'] = []
-		# 	kwargs['P_hat'] = P_hat
-		# 	kwargs['actor'] = actor
-		# 	kwargs['critic'] = critic
-		# 	_, loss_paml = actor_critic_paml_train(**kwargs)
-		# 	paml_losses.append(loss_paml)
+			# For testing: Uncomment to see effect of virtual episodes on model loss to see how PAML is affected
+			# for v_ep in range(num_virtual_episodes):
+			# 	actor, critic = actor_critic_DDPG(env, actor, noise, critic, dataset, batch_size, 1, max_actions,
+			# 									  states_dim, salient_states_dim, discount, use_model, verbose,
+			# 									  file_location, file_id, num_action_repeats,
+			# 									  planning_horizon=planning_horizon, P_hat=P_hat, model_type=model_type)
+			# 	#check paml_loss with the new policy
+			# 	kwargs['train'] = False
+			# 	kwargs['use_model'] = True
+			# 	kwargs['losses'] = []
+			# 	kwargs['P_hat'] = P_hat
+			# 	kwargs['actor'] = actor
+			# 	kwargs['critic'] = critic
+			# 	_, loss_paml = actor_critic_paml_train(**kwargs)
+			# 	paml_losses.append(loss_paml)
 
-		# For possibly scheduling amount of data from replay buffer vs from model
-		# rho_ER = fractions_real_data_schedule[global_step] if global_step < 50 else 0.5
+			# For possibly scheduling amount of data from replay buffer vs from model
+			# rho_ER = fractions_real_data_schedule[global_step] if global_step < 50 else 0.5
 
-		kwargs['dataset'] = validation_dataset
-		kwargs['train'] = False
-		kwargs['num_iters'] = 1
-		kwargs['batch_size'] = len(validation_dataset)
-		kwargs['losses'] = None
-		if model_type != 'random':
-			kwargs['lr_schedule'] = lr_schedule[P_hat_idx]
+			kwargs['dataset'] = validation_dataset
+			kwargs['train'] = False
+			kwargs['num_iters'] = 1
+			kwargs['batch_size'] = len(validation_dataset)
+			kwargs['losses'] = None
+			
 
-		# mle_L_paml_val.append(trained_Phat_mle.actor_critic_paml_train(**kwargs))
-		# paml_L_paml_val.append(P_hat[0].actor_critic_paml_train(**kwargs))
-		# L_paml_val.append(P_hat[0].actor_critic_paml_train(**kwargs))
+			# mle_L_paml_val.append(trained_Phat_mle.actor_critic_paml_train(**kwargs))
+			# paml_L_paml_val.append(P_hat[0].actor_critic_paml_train(**kwargs))
+			# L_paml_val.append(P_hat[0].actor_critic_paml_train(**kwargs))
 
-		#Check L_mle(mle) and L_mle(paml) on validation data
-		# if model_type == 'paml':
-		with torch.no_grad():
-			val_batch = validation_dataset.sample(len(validation_dataset))
-			val_x_curr = torch.tensor([samp.state for samp in val_batch]).double().to(device)
-			val_x_next = torch.tensor([samp.next_state for samp in val_batch]).double().to(device)
-			val_a_list = torch.tensor([samp.action for samp in val_batch]).double().to(device)
-			# paml_states_prime = random.sample(P_hat, 1)[0].predict(val_x_curr, val_a_list)
-			# mle_states_prime = trained_Phat_mle.predict(val_x_curr, val_a_list)
-			val_model_mle_states_prime = random.sample(P_hat, 1)[0].predict(val_x_curr, val_a_list)
+			#Check L_mle(mle) and L_mle(paml) on validation data
+			# if model_type == 'paml':
+			# with torch.no_grad():
+			# 	val_batch = validation_dataset.sample(len(validation_dataset))
+			# 	val_x_curr = torch.tensor([samp.state for samp in val_batch]).double().to(device)
+			# 	val_x_next = torch.tensor([samp.next_state for samp in val_batch]).double().to(device)
+			# 	val_a_list = torch.tensor([samp.action for samp in val_batch]).double().to(device)
+			# 	# paml_states_prime = random.sample(P_hat, 1)[0].predict(val_x_curr, val_a_list)
+			# 	# mle_states_prime = trained_Phat_mle.predict(val_x_curr, val_a_list)
+			# 	val_model_mle_states_prime = random.sample(P_hat, 1)[0].predict(val_x_curr, val_a_list)
 
-		# paml_L_mle_val_relevant.append(torch.mean(torch.sum((paml_states_prime[:,:salient_states_dim] -
-		# val_x_next[:,:salient_states_dim])**2,dim=1)).data)
-		# mle_L_mle_val_relevant.append(torch.mean(torch.sum((mle_states_prime[:,:salient_states_dim] -
-		# val_x_next[:,:salient_states_dim])**2,dim=1)).data)
+			# paml_L_mle_val_relevant.append(torch.mean(torch.sum((paml_states_prime[:,:salient_states_dim] -
+			# val_x_next[:,:salient_states_dim])**2,dim=1)).data)
+			# mle_L_mle_val_relevant.append(torch.mean(torch.sum((mle_states_prime[:,:salient_states_dim] -
+			# val_x_next[:,:salient_states_dim])**2,dim=1)).data)
 
-		# paml_L_mle_val_irrelevant.append(torch.mean(torch.sum((paml_states_prime[:,salient_states_dim:] -
-		# val_x_next[:,salient_states_dim:])**2,dim=1)).data)
-		# mle_L_mle_val_irrelevant.append(torch.mean(torch.sum((mle_states_prime[:,salient_states_dim:] -
-		# val_x_next[:,salient_states_dim:])**2,dim=1)).data)
-		
-		# L_mle_val_relevant.append(torch.mean(torch.sum((val_model_mle_states_prime[:,:salient_states_dim] -
-		# val_x_next[:,:salient_states_dim])**2,dim=1)).data)
-		# L_mle_val_irrelevant.append(torch.mean(torch.sum((val_model_mle_states_prime[:,salient_states_dim:] -
-		# val_x_next[:,salient_states_dim:])**2,dim=1)).data)
+			# paml_L_mle_val_irrelevant.append(torch.mean(torch.sum((paml_states_prime[:,salient_states_dim:] -
+			# val_x_next[:,salient_states_dim:])**2,dim=1)).data)
+			# mle_L_mle_val_irrelevant.append(torch.mean(torch.sum((mle_states_prime[:,salient_states_dim:] -
+			# val_x_next[:,salient_states_dim:])**2,dim=1)).data)
+			
+			# L_mle_val_relevant.append(torch.mean(torch.sum((val_model_mle_states_prime[:,:salient_states_dim] -
+			# val_x_next[:,:salient_states_dim])**2,dim=1)).data)
+			# L_mle_val_irrelevant.append(torch.mean(torch.sum((val_model_mle_states_prime[:,salient_states_dim:] -
+			# val_x_next[:,salient_states_dim:])**2,dim=1)).data)
 
-		#num_virtual_episodes * (2*(skipped==global_step) + 1*(skipped!=global_step))
+			#num_virtual_episodes * (2*(skipped==global_step) + 1*(skipped!=global_step))
 		value_lr_schedule = None
+
+
 		#possible memory issue: passing datasets
-		actor, critic = actor_critic_DDPG(env, actor, noise, critic, dataset, batch_size,
-										  num_virtual_episodes * (2*(skipped==global_step) + 1*(skipped!=global_step)),
-										  max_actions, states_dim, salient_states_dim, discount, use_model,
-										  verbose, value_lr_schedule, file_location, file_id,
-										  num_action_repeats, planning_horizon=planning_horizon, P_hat=P_hat,
-										  model_type=model_type, noise_type=noise_type,
-										  save_checkpoints=save_checkpoints_training, rho_ER=input_rho)
+		if global_step >= mfmb_threshold:
+			use_model = True
+			num_virtual_episodes = num_virtual_episodes_store
+		else: 
+			use_model = False
+			num_virtual_episodes = 1
+
+
+		if True:
+			actor, critic = actor_critic_DDPG(
+												env, 
+												actor, 
+												noise, 
+												critic, 
+												dataset, 
+												batch_size, 
+												num_virtual_episodes * (2*(skipped==global_step) + 1*(skipped!=global_step)),
+												max_actions, 
+												states_dim, 
+												salient_states_dim, 
+												discount, 
+												use_model,
+												verbose, 
+												value_lr_schedule, 
+												file_location, 
+												file_id,
+												num_action_repeats, 
+												planning_horizon=planning_horizon, 
+												P_hat=P_hat,
+												model_type=model_type, 
+												noise_type=noise_type,
+												save_checkpoints=save_checkpoints_training,
+												rho_ER=input_rho
+											)
 
 		#check paml_loss with the new policy
 		# kwargs['train'] = False
@@ -775,6 +872,8 @@ def main(
 	Returns:
 		None
 	'''
+
+	# env = get_env(env_name)
 	if env_name == 'lin_dyn':
 		# gym.envs.register(id='lin-dyn-v0', entry_point='gym_linear_dynamics.envs:LinDynEnv',)
 		# # env = gym.make('gym_linear_dynamics:lin-dyn-v0')
@@ -799,7 +898,8 @@ def main(
 		env.spec.id = 'dm-Walker-v0'
 
 	else:
-		raise NotImplementedError
+		env = gym.make(env_name)
+		# raise NotImplementedError
 
 	if model_type == 'model_free':
 		plan = True
@@ -815,6 +915,10 @@ def main(
 
 	max_torque = float(env.action_space.high[0])
 	actions_dim = env.action_space.shape[0]
+
+	print(actions_dim)
+	return
+
 	continuous_actionspace = True
 	R_range = planning_horizon
 

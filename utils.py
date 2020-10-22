@@ -2,6 +2,7 @@ import torch
 from torch.distributions import Categorical, Normal, MultivariateNormal
 from rewardfunctions import *
 import pdb
+import gym
 
 #device = 'cuda' if torch.cuda.is_available() else 'cpu'
 device = 'cpu'
@@ -16,14 +17,38 @@ def count_parameters(model):
 	return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 
-def non_decreasing(L):
-	''' Determine whether a list of numbers is in non-decreasing order
+def decreasing(L, tolerance):
+	''' Determine whether a list of numbers is in decreasing order
 	Args:
 		L: list of floats
+		tolerance: float
 	Returns:
-		bool: if list is in non-decreasing order
+		bool: if list is in decreasing order with given tolerance
 	'''
-	return all(x>=y for x, y in zip(L, L[1:]))
+	return all(x > y*tolerance for x, y in zip(L, L[1:]))
+
+
+def compute_normalization(data):
+    """
+    Write a function to take in a dataset and compute the means, and stds.
+    Return 6 elements: mean of s_t, std of s_t, mean of (s_t+1 - s_t), std of (s_t+1 - s_t), mean of actions, std of actions
+    """
+
+    # flatten dataset across all paths
+    observations = np.stack([item.state for item in data.memory])
+    next_observations = np.stack([item.next_state for item in data.memory])
+    actions = np.stack([item.action for item in data.memory])
+    
+    mean_obs = torch.tensor(np.mean(observations, axis=0)).unsqueeze(0)
+    std_obs = torch.tensor(np.std(observations, axis=0)).unsqueeze(0)
+    
+    mean_deltas =  torch.tensor(np.mean(next_observations - observations, axis=0)).unsqueeze(0)
+    std_deltas = torch.tensor(np.std(next_observations - observations, axis=0)).unsqueeze(0)
+    
+    mean_actions = torch.tensor(np.mean(actions, axis=0)).unsqueeze(0)
+    std_actions = torch.tensor(np.std(actions, axis=0)).unsqueeze(0)
+
+    return 0,1,0,1,0,1#mean_obs, std_obs, mean_deltas, std_deltas, mean_actions, std_actions
 
 
 def discount_rewards(list_of_rewards, discount, center=True, batch_wise=False):
@@ -124,7 +149,7 @@ class StableNoise(object):
 			elif self.states_dim == 4 * self.salient_states_dim:
 				new_obs = np.hstack([obs, cos_extra_obs, sin_extra_obs, lin_extra_obs])
 			else:
-				raise ValueError('states_dim for redundant extra dimensions should be a multiple of salient_states_dim')
+				raise ValueError('states_dim for redundant extra dimensions should be 2x, 3x, or 4x the salient_states_dim')
 		else: #random decaying extra dims
 			extra_obs = self.random_initial * self.param**t
 			new_obs = np.hstack([obs, extra_obs])
@@ -178,6 +203,7 @@ def generate_data(env, states_dim, dataset, val_dataset, actor, train_starting_s
 	stablenoise = StableNoise(states_dim, salient_states_dim, 0.992, type=noise_type) #The last value is the decay rate of the noise
 																	#it is assumed to be a property of the environment
 	#Gather training dataset
+	reset= True
 	for ep in range(train_starting_states):
 		if reset or start_state is None:
 			state = env.reset()
